@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Jersey Automate - WhatsApp Integration</title>
+  <style>
+    :root {
+      --primary: #128c7e;
+      --primary-hover: #075e54;
+      --fb-blue: #1877f2;
+      --fb-hover: #166fe5;
+      --bg: #f0f2f5;
+      --card-bg: #ffffff;
+      --text-main: #1c1e21;
+      --text-sub: #65676b;
+      --border: #e4e6eb;
+      --success: #31a24c;
+      --error: #fa383e;
+      --warning: #f7b125;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+    body { background-color: var(--bg); color: var(--text-main); min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 40px 20px; }
+    
+    .container { width: 100%; max-width: 680px; }
+    .card { background: var(--card-bg); border-radius: 12px; padding: 32px; box-shadow: 0 4px 12px rgba(0,0,0,0.06); margin-bottom: 24px; border: 1px solid var(--border); }
+    
+    .header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; }
+    .title { font-size: 22px; font-weight: 700; color: var(--text-main); }
+    .subtitle { font-size: 14px; color: var(--text-sub); margin-top: 4px; }
+
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 6px 12px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .status-DISCONNECTED { background: #fee7e7; color: var(--error); }
+    .status-CONNECTED { background: #e7f7ed; color: var(--success); }
+    .status-INITIATED, .status-TOKEN_EXCHANGED, .status-WABA_VERIFIED { background: #fff8e6; color: var(--warning); }
+    .status-FAILED { background: #fee7e7; color: var(--error); }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      font-size: 15px;
+      font-weight: 600;
+      padding: 12px 24px;
+      border-radius: 8px;
+      border: none;
+      cursor: pointer;
+      transition: background 0.15s ease, transform 0.05s ease;
+      text-decoration: none;
+    }
+    .btn:active { transform: scale(0.98); }
+    .btn-fb { background-color: var(--fb-blue); color: #fff; }
+    .btn-fb:hover { background-color: var(--fb-hover); }
+    .btn-danger { background-color: #fee7e7; color: var(--error); border: 1px solid #fcc; }
+    .btn-danger:hover { background-color: #fdd; }
+    .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+    .phone-list { margin-top: 20px; border-top: 1px solid var(--border); padding-top: 20px; }
+    .phone-item { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; background: #fafafa; border-radius: 8px; margin-bottom: 8px; border: 1px solid var(--border); }
+    .phone-title { font-weight: 600; font-size: 15px; }
+    .phone-meta { font-size: 13px; color: var(--text-sub); }
+
+    .log-box {
+      margin-top: 24px;
+      background: #1e1e1e;
+      color: #d4d4d4;
+      border-radius: 8px;
+      padding: 16px;
+      font-family: monospace;
+      font-size: 13px;
+      max-height: 180px;
+      overflow-y: auto;
+      line-height: 1.5;
+    }
+    .log-entry { margin-bottom: 4px; }
+    .log-entry.info { color: #569cd6; }
+    .log-entry.success { color: #4ec9b0; }
+    .log-entry.warn { color: #ce9178; }
+    .log-entry.error { color: #f48771; }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <div class="card">
+      <div class="header">
+        <div>
+          <h1 class="title">WhatsApp Business Integration</h1>
+          <p class="subtitle">Embedded Signup v4 Onboarding Hub</p>
+        </div>
+        <span id="connection-status" class="status-badge status-DISCONNECTED">DISCONNECTED</span>
+      </div>
+
+      <p id="status-desc" style="font-size: 14px; color: var(--text-sub); margin-bottom: 24px;">
+        Connect your WhatsApp Business Account to enable automated notifications and messaging.
+      </p>
+
+      <div id="actions-area">
+        <button id="signup-btn" class="btn btn-fb" onclick="launchWhatsAppSignup()">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/>
+          </svg>
+          Connect with WhatsApp
+        </button>
+      </div>
+
+      <div id="phone-container" class="phone-list" style="display: none;">
+        <h3 style="font-size: 15px; margin-bottom: 12px;">Active Phone Numbers</h3>
+        <div id="phone-items"></div>
+      </div>
+
+      <div class="log-box" id="activity-log">
+        <div class="log-entry info">[System] Initializing WhatsApp SDK & Session...</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Meta Facebook JS SDK -->
+  <script async defer crossorigin="anonymous" src="https://connect.facebook.net/en_US/sdk.js"></script>
+
+  <script>
+    let appConfig = null;
+
+    function log(msg, type = 'info') {
+      const logBox = document.getElementById('activity-log');
+      const entry = document.createElement('div');
+      entry.className = `log-entry ${type}`;
+      entry.innerText = `[${new Date().toLocaleTimeString()}] ${msg}`;
+      logBox.appendChild(entry);
+      logBox.scrollTop = logBox.scrollHeight;
+    }
+
+    // 1. Fetch safe client configuration from backend
+    async function loadConfig() {
+      try {
+        const res = await fetch('/api/config');
+        appConfig = await res.json();
+        log(`Config loaded: App ID ${appConfig.appId || 'NOT SET'}, API Version ${appConfig.graphApiVersion}`);
+
+        if (window.FB && appConfig.appId) {
+          initSdk();
+        }
+      } catch (err) {
+        log(`Failed to load app config: ${err.message}`, 'error');
+      }
+    }
+
+    function initSdk() {
+      if (!appConfig || !appConfig.appId) return;
+      window.FB.init({
+        appId: appConfig.appId,
+        autoLogAppEvents: true,
+        xfbml: true,
+        version: appConfig.graphApiVersion || 'v25.0'
+      });
+      log('Meta JavaScript SDK initialized.', 'success');
+    }
+
+    window.fbAsyncInit = function() {
+      if (appConfig) {
+        initSdk();
+      }
+    };
+
+    // 2. Race-Condition Coordinator
+    class WhatsAppOnboardingCoordinator {
+      constructor() {
+        this.reset();
+      }
+
+      reset() {
+        this.code = null;
+        this.sessionHints = null;
+        this.isProcessing = false;
+      }
+
+      setSessionData(data) {
+        this.sessionHints = data;
+        log(`Captured session event: WABA ${data?.waba_id || 'N/A'}, Phone ${data?.phone_number_id || 'N/A'}`);
+        this.evaluate();
+      }
+
+      setAuthCode(code) {
+        this.code = code;
+        log(`Captured OAuth code (expires in 30s).`);
+        this.evaluate();
+      }
+
+      async evaluate() {
+        if (this.code && !this.isProcessing) {
+          this.isProcessing = true;
+          log('Exchanging credentials and verifying WABA with server...', 'info');
+          document.getElementById('signup-btn').disabled = true;
+
+          try {
+            const res = await fetch('/api/whatsapp/onboard', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer tenant_demo_01'
+              },
+              body: JSON.stringify({
+                code: this.code,
+                hints: this.sessionHints || {}
+              })
+            });
+
+            const result = await res.json();
+            if (res.ok && result.success) {
+              log('WhatsApp connected successfully!', 'success');
+              await refreshStatus();
+            } else {
+              log(`Onboarding error: ${result.message || 'Unknown error'}`, 'error');
+            }
+          } catch (err) {
+            log(`Network communication error: ${err.message}`, 'error');
+          } finally {
+            this.reset();
+            document.getElementById('signup-btn').disabled = false;
+          }
+        }
+      }
+    }
+
+    const coordinator = new WhatsAppOnboardingCoordinator();
+
+    // 3. Session postMessage listener
+    window.addEventListener('message', (event) => {
+      if (!event.origin.endsWith('facebook.com')) return;
+      try {
+        const payload = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+        if (payload.type === 'WA_EMBEDDED_SIGNUP') {
+          if (payload.event === 'FINISH') {
+            coordinator.setSessionData(payload.data);
+          } else if (payload.event === 'CANCEL') {
+            log(`Embedded Signup flow abandoned at step: ${payload.data?.current_step || 'unknown'}`, 'warn');
+            coordinator.reset();
+          }
+        }
+      } catch (_) {}
+    });
+
+    // 4. FB Login Callback
+    function fbLoginCallback(response) {
+      if (response.authResponse?.code) {
+        coordinator.setAuthCode(response.authResponse.code);
+      } else {
+        log('Popup closed without authorization.', 'warn');
+        coordinator.reset();
+      }
+    }
+
+    // 5. Trigger Popup
+    function launchWhatsAppSignup() {
+      if (!appConfig || !appConfig.configId) {
+        log('Please set META_CONFIG_ID in .env before launching popup.', 'error');
+        alert('Please configure META_CONFIG_ID in your .env file first.');
+        return;
+      }
+
+      coordinator.reset();
+      log('Spawning Meta Embedded Signup v4 popup...');
+      FB.login(fbLoginCallback, {
+        config_id: appConfig.configId,
+        response_type: 'code',
+        override_default_response_type: true,
+        extras: { setup: {} }
+      });
+    }
+
+    // 6. Refresh connection status
+    async function refreshStatus() {
+      try {
+        const res = await fetch('/api/whatsapp/status', {
+          headers: { 'Authorization': 'Bearer tenant_demo_01' }
+        });
+        const data = await res.json();
+
+        const badge = document.getElementById('connection-status');
+        badge.className = `status-badge status-${data.status || 'DISCONNECTED'}`;
+        badge.innerText = data.status || 'DISCONNECTED';
+
+        const actionsArea = document.getElementById('actions-area');
+        const phoneContainer = document.getElementById('phone-container');
+        const phoneItems = document.getElementById('phone-items');
+
+        if (data.status === 'CONNECTED') {
+          document.getElementById('status-desc').innerText = `WABA ID: ${data.wabaId}`;
+          actionsArea.innerHTML = `
+            <button class="btn btn-danger" onclick="disconnectWhatsApp()">Disconnect WhatsApp</button>
+          `;
+
+          if (data.phoneNumbers && data.phoneNumbers.length > 0) {
+            phoneContainer.style.display = 'block';
+            phoneItems.innerHTML = data.phoneNumbers.map(p => `
+              <div class="phone-item">
+                <div>
+                  <div class="phone-title">${p.displayPhoneNumber || p.id}</div>
+                  <div class="phone-meta">Name: ${p.verifiedName || 'N/A'} • Quality: ${p.qualityRating || 'UNKNOWN'}</div>
+                </div>
+                <span class="status-badge status-${p.isRegistered ? 'CONNECTED' : 'DISCONNECTED'}">
+                  ${p.isRegistered ? 'REGISTERED' : 'UNREGISTERED'}
+                </span>
+              </div>
+            `).join('');
+          } else {
+            phoneContainer.style.display = 'none';
+          }
+        } else {
+          document.getElementById('status-desc').innerText = 'Connect your WhatsApp Business Account to enable automated notifications and messaging.';
+          actionsArea.innerHTML = `
+            <button id="signup-btn" class="btn btn-fb" onclick="launchWhatsAppSignup()">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/>
+              </svg>
+              Connect with WhatsApp
+            </button>
+          `;
+          phoneContainer.style.display = 'none';
+        }
+      } catch (err) {
+        log(`Failed to fetch status: ${err.message}`, 'error');
+      }
+    }
+
+    async function disconnectWhatsApp() {
+      if (!confirm('Are you sure you want to disconnect this WhatsApp Business Account?')) return;
+      try {
+        const res = await fetch('/api/whatsapp/disconnect', {
+          method: 'POST',
+          headers: { 'Authorization': 'Bearer tenant_demo_01' }
+        });
+        await res.json();
+        log('Disconnected WhatsApp account.', 'info');
+        await refreshStatus();
+      } catch (err) {
+        log(`Disconnect failed: ${err.message}`, 'error');
+      }
+    }
+
+    // Startup
+    loadConfig().then(refreshStatus);
+  </script>
+</body>
+</html>
