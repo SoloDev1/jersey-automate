@@ -88,6 +88,19 @@ export const metaGraphService = {
       }
     } catch (_) {}
 
+    // 4. Try /me/businesses?fields=id,name,owned_whatsapp_business_accounts
+    try {
+      const res = await fetch(`${GRAPH_BASE_URL}/me/businesses?fields=id,name,owned_whatsapp_business_accounts{id,name}`, {
+        headers: { Authorization: `Bearer ${accessToken}` }
+      });
+      const data = await res.json();
+      for (const b of data.data || []) {
+        if (b.owned_whatsapp_business_accounts?.data?.length > 0) {
+          return b.owned_whatsapp_business_accounts.data[0].id;
+        }
+      }
+    } catch (_) {}
+
     throw new Error('Unable to automatically detect WhatsApp Business Account. Please complete setup in Meta popup.');
   },
 

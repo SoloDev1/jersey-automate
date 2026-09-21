@@ -249,6 +249,7 @@
       try {
         const payload = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
         if (payload.type === 'WA_EMBEDDED_SIGNUP') {
+          log(`Session message received (${payload.event}): ` + JSON.stringify(payload.data || {}), 'info');
           if (payload.event === 'FINISH') {
             coordinator.setSessionData(payload.data);
           } else if (payload.event === 'CANCEL') {
@@ -297,12 +298,16 @@
       const loginParams = {
         response_type: 'code',
         override_default_response_type: true,
-        scope: 'whatsapp_business_management,whatsapp_business_messaging',
-        extras: { setup: {} }
+        extras: {
+          setup: {}
+        }
       };
 
       if (appConfig.configId) {
+        // Embedded Signup v4 requires config_id without scope to trigger the full onboarding wizard
         loginParams.config_id = appConfig.configId;
+      } else {
+        loginParams.scope = 'whatsapp_business_management,whatsapp_business_messaging';
       }
 
       FB.login(fbLoginCallback, loginParams);
