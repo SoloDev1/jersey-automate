@@ -258,9 +258,22 @@
       } catch (_) {}
     });
 
+    function sanitizeLogData(data) {
+      if (!data) return '';
+      try {
+        const clone = JSON.parse(JSON.stringify(data));
+        if (clone.authResponse?.accessToken) {
+          clone.authResponse.accessToken = clone.authResponse.accessToken.slice(0, 10) + '...[REDACTED]';
+        }
+        return JSON.stringify(clone);
+      } catch (_) {
+        return '[data]';
+      }
+    }
+
     // 4. FB Login Callback
     function fbLoginCallback(response) {
-      log('FB.login callback received: ' + JSON.stringify(response), 'info');
+      log('FB.login callback received: ' + sanitizeLogData(response), 'info');
       if (response.authResponse?.code || response.authResponse?.accessToken) {
         coordinator.setAuthData(response.authResponse);
       } else {
