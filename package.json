@@ -1,18 +1,45 @@
 {
   "name": "jersey-automate",
   "version": "1.0.0",
-  "description": "",
-  "main": "src/server.js",
-  "scripts": {
-    "start": "node src/server.js",
-    "test": "node tests/verify.test.js && node tests/api.test.js"
-  },
-  "keywords": [],
+  "description": "Jersey E-Commerce CRM & WhatsApp Automation System",
+  "main": "backend/src/server.ts",
   "type": "module",
+  "scripts": {
+    "dev": "tsx watch backend/src/server.ts",
+    "start": "tsx backend/src/server.ts",
+    "build": "tsc -p backend/tsconfig.json",
+    "typecheck": "tsc -p backend/tsconfig.json --noEmit",
+    "scrape": "node scraper/scripts/scrape.js",
+    "crm:dev": "npm --prefix crm run dev",
+    "crm:build": "npm --prefix crm run build"
+  },
+  "workspaces": [
+    "crm"
+  ],
+  "keywords": [
+    "whatsapp",
+    "crm",
+    "jersey",
+    "paystack",
+    "supabase"
+  ],
   "dependencies": {
-    "cheerio": "^1.2.0",
+    "@supabase/supabase-js": "^2.49.1",
+    "axios": "^1.7.9",
+    "cheerio": "^1.0.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
-    "express": "^4.21.2"
+    "express": "^4.21.2",
+    "node-cron": "^3.0.3",
+    "openai": "^4.85.4",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.13.4",
+    "@types/node-cron": "^3.0.11",
+    "tsx": "^4.19.3",
+    "typescript": "^5.7.3"
   }
 }
