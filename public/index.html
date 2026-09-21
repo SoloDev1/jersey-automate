@@ -146,7 +146,7 @@
       try {
         const res = await fetch('/api/config');
         appConfig = await res.json();
-        log(`Config loaded: App ID ${appConfig.appId || 'NOT SET'}, API Version ${appConfig.graphApiVersion}`);
+        log(`Config loaded: App ID ${appConfig.appId || 'NOT SET'}, Config ID ${appConfig.configId || 'NOT SET'}, API Version ${appConfig.graphApiVersion}`);
 
         if (window.FB && appConfig.appId) {
           initSdk();
@@ -253,30 +253,38 @@
 
     // 4. FB Login Callback
     function fbLoginCallback(response) {
+      log('FB.login callback received: ' + JSON.stringify(response), 'info');
       if (response.authResponse?.code) {
         coordinator.setAuthCode(response.authResponse.code);
       } else {
-        log('Popup closed without authorization.', 'warn');
+        const errorMsg = response.error_message || response.status || 'No auth code returned';
+        log(`Popup closed without authorization (${errorMsg}).`, 'warn');
         coordinator.reset();
       }
     }
 
     // 5. Trigger Popup
     function launchWhatsAppSignup() {
-      if (!appConfig || !appConfig.configId) {
-        log('Please set META_CONFIG_ID in .env before launching popup.', 'error');
-        alert('Please configure META_CONFIG_ID in your .env file first.');
+      if (!appConfig || !appConfig.appId) {
+        log('App ID is missing.', 'error');
         return;
       }
 
       coordinator.reset();
-      log('Spawning Meta Embedded Signup v4 popup...');
-      FB.login(fbLoginCallback, {
-        config_id: appConfig.configId,
+      log(`Spawning Meta Embedded Signup v4 popup (Config ID: ${appConfig.configId || 'NONE'})...`);
+
+      const loginParams = {
         response_type: 'code',
         override_default_response_type: true,
+        scope: 'whatsapp_business_management,whatsapp_business_messaging',
         extras: { setup: {} }
-      });
+      };
+
+      if (appConfig.configId) {
+        loginParams.config_id = appConfig.configId;
+      }
+
+      FB.login(fbLoginCallback, loginParams);
     }
 
     // 6. Refresh connection status
