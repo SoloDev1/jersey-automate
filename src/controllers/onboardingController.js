@@ -1,6 +1,6 @@
 import { db } from '../db/storage.js';
 import { metaGraphService } from '../services/metaGraphService.js';
-import { encryptToken } from '../utils/crypto.js';
+import { encryptToken, decryptToken } from '../utils/crypto.js';
 
 export const onboardingController = {
   /**
@@ -177,6 +177,72 @@ export const onboardingController = {
         isRegistered: p.isRegistered
       }))
     });
+  },
+
+  /**
+   * Requests an OTP verification code sent to the phone number.
+   */
+  async requestPhoneCode(req, res) {
+    const tenant = req.tenant;
+    const { phoneNumberId, method } = req.body;
+
+    if (!phoneNumberId) {
+      return res.status(400).json({ error: 'phoneNumberId is required.' });
+    }
+
+    const connection = await db.getConnectionByTenant(tenant.id);
+    if (!connection || !connection.accessTokenEncrypted) {
+      return res.status(400).json({ error: 'No active WhatsApp connection found.' });
+    }
+
+    try {
+      const accessToken = decryptToken(connection.accessTokenEncrypted);
+      const result = await metaGraphService.requestCode(phoneNumberId, accessToken, method || 'SMS');
+      return res.json({ success: true, message: `Verification code sent via ${method || 'SMS'}.`, result });
+    } catch (err) {
+      console.error('[Request Code Error]', err);
+      return res.status(500).json({ error: err.message });
+    }
+  },
+
+  /**
+   * Submits the OTP verification code and registers the number for Cloud API.
+   */
+  async verifyPhoneCode(req, res) {
+    const tenant = req.tenant;
+    const { phoneNumberId, code, pin } = req.body;
+
+    if (!phoneNumberId || !code) {
+      return res.status(400).json({ error: 'phoneNumberId and 6-digit code are required.' });
+    }
+
+    const connection = await db.getConnectionByTenant(tenant.id);
+    if (!connection || !connection.accessTokenEncrypted) {
+      return res.status(400).json({ error: 'No active WhatsApp connection found.' });
+    }
+
+    try {
+      const accessToken = decryptToken(connection.accessTokenEncrypted);
+      // 1. Verify OTP code
+      await metaGraphService.verifyCode(phoneNumberId, accessToken, code);
+
+      // 2. Register number with PIN
+      const registerPin = pin && /^\d{6}$/.test(pin) ? pin : '123456';
+      await metaGraphService.registerPhoneNumber(phoneNumberId, accessToken, registerPin);
+
+      // 3. Mark number as registered in DB
+      await db.upsertPhoneNumber({
+        connectionId: connection.id,
+        phoneNumberId,
+        isRegistered: true,
+        codeVerificationStatus: 'VERIFIED'
+      });
+
+      return res.json({ success: true, message: 'Phone number verified and registered successfully!' });
+    } catch (err) {
+      console.error('[Verify Code Error]', err);
+      return res.status(500).json({ error: err.message });
+    }
   },
 
   /**

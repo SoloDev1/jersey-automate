@@ -210,5 +210,60 @@ export const metaGraphService = {
     }
 
     return data;
+  },
+
+  /**
+   * Requests an OTP verification code via SMS or Voice Call for an unverified phone number.
+   */
+  async requestCode(phoneNumberId, accessToken, codeMethod = 'SMS', language = 'en_US') {
+    const res = await fetch(`${GRAPH_BASE_URL}/${phoneNumberId}/request_code`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        code_method: codeMethod,
+        language
+      })
+    });
+    const data = await res.json();
+
+    if (data.error) {
+      const err = new Error(`Request code failed: ${data.error.message}`);
+      err.metaError = data.error;
+      throw err;
+    }
+
+    return data;
+  },
+
+  /**
+   * Verifies the 6-digit OTP code received on the phone number.
+   */
+  async verifyCode(phoneNumberId, accessToken, code) {
+    if (!code || !/^\d{6}$/.test(code.trim())) {
+      throw new Error('Verification code must be a 6-digit numeric string.');
+    }
+
+    const res = await fetch(`${GRAPH_BASE_URL}/${phoneNumberId}/verify_code`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        code: code.trim()
+      })
+    });
+    const data = await res.json();
+
+    if (data.error) {
+      const err = new Error(`Code verification failed: ${data.error.message}`);
+      err.metaError = data.error;
+      throw err;
+    }
+
+    return data;
   }
 };

@@ -48,6 +48,8 @@ app.get('/api/config', (req, res) => {
 app.post('/api/whatsapp/onboard', requireTenantAuth, onboardingController.onboard);
 app.get('/api/whatsapp/status', requireTenantAuth, onboardingController.getConnectionStatus);
 app.post('/api/whatsapp/disconnect', requireTenantAuth, onboardingController.disconnect);
+app.post('/api/whatsapp/phone/request-code', requireTenantAuth, onboardingController.requestPhoneCode);
+app.post('/api/whatsapp/phone/verify-code', requireTenantAuth, onboardingController.verifyPhoneCode);
 
 // WhatsApp Webhook Handshake & Ingestion
 app.get('/api/webhooks/whatsapp', webhookController.handleChallenge);

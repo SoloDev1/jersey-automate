@@ -385,9 +385,16 @@
                   <div class="phone-title">${p.displayPhoneNumber || p.id}</div>
                   <div class="phone-meta">Name: ${p.verifiedName || 'N/A'} • Quality: ${p.qualityRating || 'UNKNOWN'}</div>
                 </div>
-                <span class="status-badge status-${p.isRegistered ? 'CONNECTED' : 'DISCONNECTED'}">
-                  ${p.isRegistered ? 'REGISTERED' : 'UNREGISTERED'}
-                </span>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <span class="status-badge status-${p.isRegistered ? 'CONNECTED' : 'DISCONNECTED'}">
+                    ${p.isRegistered ? 'REGISTERED' : 'UNREGISTERED'}
+                  </span>
+                  ${!p.isRegistered ? `
+                    <button class="btn" style="padding: 6px 12px; font-size: 12px; background: #128c7e; color: #fff;" onclick="startPhoneVerification('${p.id}', '${p.displayPhoneNumber || p.id}')">
+                      Verify & Register
+                    </button>
+                  ` : ''}
+                </div>
               </div>
             `).join('');
           } else {
@@ -407,6 +414,55 @@
         }
       } catch (err) {
         log(`Failed to fetch status: ${err.message}`, 'error');
+      }
+    }
+
+    async function startPhoneVerification(phoneId, displayNumber) {
+      const confirmSend = confirm(`Send a 6-digit verification code via SMS to ${displayNumber}?`);
+      if (!confirmSend) return;
+
+      log(`Requesting SMS verification code for ${displayNumber}...`, 'info');
+      try {
+        const reqRes = await fetch('/api/whatsapp/phone/request-code', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer tenant_demo_01'
+          },
+          body: JSON.stringify({ phoneNumberId: phoneId, method: 'SMS' })
+        });
+        const reqData = await reqRes.json();
+        if (!reqRes.ok || reqData.error) {
+          throw new Error(reqData.error || 'Failed to request code');
+        }
+
+        log(`SMS verification code sent to ${displayNumber}!`, 'success');
+
+        const otpCode = prompt(`Enter the 6-digit SMS verification code sent to ${displayNumber}:`);
+        if (!otpCode) {
+          log('Verification cancelled by user.', 'warn');
+          return;
+        }
+
+        log(`Submitting verification code ${otpCode}...`, 'info');
+        const verifyRes = await fetch('/api/whatsapp/phone/verify-code', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer tenant_demo_01'
+          },
+          body: JSON.stringify({ phoneNumberId: phoneId, code: otpCode })
+        });
+        const verifyData = await verifyRes.json();
+        if (!verifyRes.ok || verifyData.error) {
+          throw new Error(verifyData.error || 'Failed to verify code');
+        }
+
+        log(`Phone number ${displayNumber} verified and registered successfully!`, 'success');
+        await refreshStatus();
+      } catch (err) {
+        log(`Phone verification error: ${err.message}`, 'error');
+        alert(`Verification failed: ${err.message}`);
       }
     }
 
