@@ -100,8 +100,8 @@ export const onboardingController = {
         accessTokenEncrypted: encryptedAccessToken,
         status: 'CONNECTED',
         lastError: null,
-        tokenExpiresAt: tokenResult.expiresIn
-          ? new Date(Date.now() + tokenResult.expiresIn * 1000).toISOString()
+        tokenExpiresAt: expiresIn
+          ? new Date(Date.now() + expiresIn * 1000).toISOString()
           : null
       });
 
