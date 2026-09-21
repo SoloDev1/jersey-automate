@@ -114,10 +114,23 @@
           Connect with WhatsApp
         </button>
 
+        <div style="margin-top: 16px; padding: 12px; background: #e7f7ed; border-radius: 8px; border: 1px solid #b7ebc7; text-align: left;">
+          <label style="display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; cursor: pointer; color: #075e54;">
+            <input id="coexistence-toggle" type="checkbox" checked />
+            Enable Coexistence (Use WhatsApp Business mobile app & API together)
+          </label>
+          <div style="font-size: 12px; color: #444; margin-top: 4px;">
+            Allows your phone number to stay active in your mobile WhatsApp Business App while simultaneously connecting to the Cloud API.
+          </div>
+        </div>
+
         <div style="margin-top: 15px; font-size: 13px; color: var(--text-sub);">
-          <details>
-            <summary style="cursor: pointer; color: var(--fb-blue);">Have an existing WABA ID? (Optional)</summary>
-            <input id="manual-waba-input" type="text" placeholder="e.g. 1024989263250354" style="margin-top: 8px; width: 100%; padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px;" />
+          <details open>
+            <summary style="cursor: pointer; color: var(--fb-blue); font-weight: 600;">Target WABA Account</summary>
+            <div style="margin-top: 6px;">
+              <input id="manual-waba-input" type="text" placeholder="e.g. 2983954405108615" style="width: 100%; padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; font-family: monospace;" />
+              <div style="font-size: 11px; color: var(--text-sub); margin-top: 4px;">Pre-filled with your Solodev WABA ID.</div>
+            </div>
           </details>
         </div>
       </div>
@@ -154,6 +167,13 @@
         const res = await fetch('/api/config');
         appConfig = await res.json();
         log(`Config loaded: App ID ${appConfig.appId || 'NOT SET'}, Config ID ${appConfig.configId || 'NOT SET'}, API Version ${appConfig.graphApiVersion}`);
+
+        if (appConfig.defaultWabaId) {
+          const wabaInput = document.getElementById('manual-waba-input');
+          if (wabaInput && !wabaInput.value) {
+            wabaInput.value = appConfig.defaultWabaId;
+          }
+        }
 
         if (window.FB && appConfig.appId) {
           initSdk();
@@ -307,15 +327,25 @@
       }
 
       coordinator.reset();
-      log(`Spawning Meta Embedded Signup v4 popup (Config ID: ${appConfig.configId || 'NONE'})...`);
+
+      const isCoexistence = document.getElementById('coexistence-toggle')?.checked;
+      const extrasPayload = {
+        setup: {}
+      };
+
+      if (isCoexistence) {
+        extrasPayload.featureType = 'whatsapp_business_app_onboarding';
+        extrasPayload.sessionInfoVersion = '3';
+        log(`Spawning Coexistence Embedded Signup (Linking Mobile WhatsApp Business App)...`, 'info');
+      } else {
+        log(`Spawning Standard WhatsApp Cloud API Signup...`, 'info');
+      }
 
       const loginParams = {
         response_type: 'code',
         override_default_response_type: true,
         scope: 'whatsapp_business_management,whatsapp_business_messaging',
-        extras: {
-          setup: {}
-        }
+        extras: extrasPayload
       };
 
       if (appConfig.configId) {

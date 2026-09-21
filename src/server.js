@@ -39,7 +39,8 @@ app.get('/api/config', (req, res) => {
   res.json({
     appId: config.metaAppId,
     configId: config.metaConfigId,
-    graphApiVersion: config.graphApiVersion
+    graphApiVersion: config.graphApiVersion,
+    defaultWabaId: config.defaultWabaId
   });
 });
 

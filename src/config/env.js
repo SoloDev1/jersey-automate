@@ -8,6 +8,7 @@ export const config = {
   graphApiVersion: process.env.GRAPH_API_VERSION || 'v25.0',
   tokenEncryptionKey: process.env.TOKEN_ENCRYPTION_KEY || '',
   webhookVerifyToken: process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN || 'default_verify_token',
+  defaultWabaId: process.env.DEFAULT_WABA_ID || '2983954405108615',
   port: parseInt(process.env.PORT || '3000', 10)
 };
 

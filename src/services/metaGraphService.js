@@ -113,6 +113,11 @@ export const metaGraphService = {
       }
     } catch (_) {}
 
+    // 6. Use configured default WABA ID if present
+    if (config.defaultWabaId) {
+      return config.defaultWabaId;
+    }
+
     throw new Error('No WhatsApp Business Account (WABA) found. Please create one in business.facebook.com/settings/whatsapp-business-accounts or enter your WABA ID.');
   },
 
