@@ -113,6 +113,13 @@
           </svg>
           Connect with WhatsApp
         </button>
+
+        <div style="margin-top: 15px; font-size: 13px; color: var(--text-sub);">
+          <details>
+            <summary style="cursor: pointer; color: var(--fb-blue);">Have an existing WABA ID? (Optional)</summary>
+            <input id="manual-waba-input" type="text" placeholder="e.g. 1024989263250354" style="margin-top: 8px; width: 100%; padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px;" />
+          </details>
+        </div>
       </div>
 
       <div id="phone-container" class="phone-list" style="display: none;">
@@ -209,6 +216,13 @@
           log('Authorizing with server and verifying WABA...', 'info');
           document.getElementById('signup-btn').disabled = true;
 
+          const manualWaba = document.getElementById('manual-waba-input')?.value?.trim();
+          const hintsPayload = Object.assign({}, this.sessionHints || {});
+          if (manualWaba) {
+            hintsPayload.waba_id = manualWaba;
+            log(`Using provided WABA ID: ${manualWaba}`, 'info');
+          }
+
           try {
             const res = await fetch('/api/whatsapp/onboard', {
               method: 'POST',
@@ -219,7 +233,7 @@
               body: JSON.stringify({
                 code: this.code,
                 accessToken: this.accessToken,
-                hints: this.sessionHints || {}
+                hints: hintsPayload
               })
             });
 
@@ -298,16 +312,14 @@
       const loginParams = {
         response_type: 'code',
         override_default_response_type: true,
+        scope: 'whatsapp_business_management,whatsapp_business_messaging',
         extras: {
           setup: {}
         }
       };
 
       if (appConfig.configId) {
-        // Embedded Signup v4 requires config_id without scope to trigger the full onboarding wizard
         loginParams.config_id = appConfig.configId;
-      } else {
-        loginParams.scope = 'whatsapp_business_management,whatsapp_business_messaging';
       }
 
       FB.login(fbLoginCallback, loginParams);

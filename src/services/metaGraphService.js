@@ -101,7 +101,19 @@ export const metaGraphService = {
       }
     } catch (_) {}
 
-    throw new Error('Unable to automatically detect WhatsApp Business Account. Please complete setup in Meta popup.');
+    // 5. Try finding WABA linked to the Meta App itself
+    try {
+      const appToken = `${config.metaAppId}|${config.metaAppSecret}`;
+      const res = await fetch(`https://graph.facebook.com/${config.graphApiVersion}/${config.metaAppId}?fields=whatsapp_business_accounts{id,name}`, {
+        headers: { Authorization: `Bearer ${appToken}` }
+      });
+      const data = await res.json();
+      if (data.whatsapp_business_accounts?.data?.length > 0) {
+        return data.whatsapp_business_accounts.data[0].id;
+      }
+    } catch (_) {}
+
+    throw new Error('No WhatsApp Business Account (WABA) found. Please create one in business.facebook.com/settings/whatsapp-business-accounts or enter your WABA ID.');
   },
 
   /**
