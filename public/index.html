@@ -228,7 +228,8 @@
               log('WhatsApp connected successfully!', 'success');
               await refreshStatus();
             } else {
-              log(`Onboarding error: ${result.message || 'Unknown error'}`, 'error');
+              const detailInfo = result.detail ? ` (${result.detail})` : '';
+              log(`Onboarding error: ${result.message || 'Unknown error'}${detailInfo}`, 'error');
             }
           } catch (err) {
             log(`Network communication error: ${err.message}`, 'error');

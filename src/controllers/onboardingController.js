@@ -137,11 +137,12 @@ export const onboardingController = {
         });
       }
 
-      // Return sanitized, user-safe error message
+      // Return error with diagnostic detail
       return res.status(500).json({
         success: false,
         code: 'WHATSAPP_ONBOARDING_FAILED',
-        message: 'We were unable to complete the WhatsApp connection. Please verify your Meta account setup and try again.'
+        message: 'We were unable to complete the WhatsApp connection.',
+        detail: err.message
       });
     }
   },
