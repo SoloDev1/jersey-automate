@@ -10,13 +10,13 @@ export const onboardingController = {
    */
   async onboard(req, res) {
     const tenant = req.tenant;
-    const { code, hints } = req.body;
+    const { code, accessToken: directAccessToken, hints } = req.body;
 
-    if (!code) {
+    if (!code && !directAccessToken) {
       return res.status(400).json({
         success: false,
-        code: 'MISSING_AUTHORIZATION_CODE',
-        message: 'The Meta authorization code is required.'
+        code: 'MISSING_AUTHORIZATION',
+        message: 'The Meta authorization code or access token is required.'
       });
     }
 
@@ -38,9 +38,15 @@ export const onboardingController = {
         });
       }
 
-      // 2. Immediate Code Exchange (< 30 seconds TTL)
-      const tokenResult = await metaGraphService.exchangeCodeForToken(code);
-      const accessToken = tokenResult.accessToken;
+      // 2. Token Resolution (exchanged from code or provided directly by SDK)
+      let accessToken = directAccessToken;
+      let expiresIn = null;
+
+      if (code) {
+        const tokenResult = await metaGraphService.exchangeCodeForToken(code);
+        accessToken = tokenResult.accessToken;
+        expiresIn = tokenResult.expiresIn;
+      }
 
       await db.updateConnection(connection.id, {
         status: 'TOKEN_EXCHANGED'
@@ -49,10 +55,10 @@ export const onboardingController = {
       // 3. Server-side Token Inspection & Validation
       const tokenDebug = await metaGraphService.debugToken(accessToken);
 
-      // 4. Verify WABA Identity (Never blindly trust frontend parameters)
-      const candidateWabaId = hints?.waba_id;
+      // 4. Verify or Auto-Discover WABA Identity
+      let candidateWabaId = hints?.waba_id;
       if (!candidateWabaId) {
-        throw new Error('No WhatsApp Business Account ID was detected in the authorization session.');
+        candidateWabaId = await metaGraphService.discoverWaba(accessToken, tokenDebug);
       }
 
       const verifiedWaba = await metaGraphService.getWaba(candidateWabaId, accessToken);

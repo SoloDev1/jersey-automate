@@ -52,6 +52,46 @@ export const metaGraphService = {
   },
 
   /**
+   * Discovers the user's WABA ID automatically if not provided in hints.
+   * Inspects debug_token granular_scopes and /me endpoints.
+   */
+  async discoverWaba(accessToken, debugData) {
+    // 1. Try granular_scopes from debug_token
+    if (debugData?.granular_scopes) {
+      const scope = debugData.granular_scopes.find(
+        (s) => s.scope === 'whatsapp_business_management'
+      );
+      if (scope?.target_ids && scope.target_ids.length > 0) {
+        return scope.target_ids[0];
+      }
+    }
+
+    // 2. Try /me/client_whatsapp_business_accounts
+    try {
+      const res = await fetch(`${GRAPH_BASE_URL}/me/client_whatsapp_business_accounts`, {
+        headers: { Authorization: `Bearer ${accessToken}` }
+      });
+      const data = await res.json();
+      if (data.data && data.data.length > 0) {
+        return data.data[0].id;
+      }
+    } catch (_) {}
+
+    // 3. Try /me?fields=whatsapp_business_accounts
+    try {
+      const res = await fetch(`${GRAPH_BASE_URL}/me?fields=whatsapp_business_accounts`, {
+        headers: { Authorization: `Bearer ${accessToken}` }
+      });
+      const data = await res.json();
+      if (data.whatsapp_business_accounts?.data?.length > 0) {
+        return data.whatsapp_business_accounts.data[0].id;
+      }
+    } catch (_) {}
+
+    throw new Error('Unable to automatically detect WhatsApp Business Account. Please complete setup in Meta popup.');
+  },
+
+  /**
    * Reads WABA details directly from Graph API to verify ownership and retrieve metadata.
    */
   async getWaba(wabaId, accessToken) {

@@ -181,6 +181,7 @@
 
       reset() {
         this.code = null;
+        this.accessToken = null;
         this.sessionHints = null;
         this.isProcessing = false;
       }
@@ -191,16 +192,21 @@
         this.evaluate();
       }
 
-      setAuthCode(code) {
-        this.code = code;
-        log(`Captured OAuth code (expires in 30s).`);
+      setAuthData(authResponse) {
+        this.code = authResponse.code || null;
+        this.accessToken = authResponse.accessToken || null;
+        if (this.code) {
+          log('Captured authorization code.');
+        } else if (this.accessToken) {
+          log('Captured direct access token.');
+        }
         this.evaluate();
       }
 
       async evaluate() {
-        if (this.code && !this.isProcessing) {
+        if ((this.code || this.accessToken) && !this.isProcessing) {
           this.isProcessing = true;
-          log('Exchanging credentials and verifying WABA with server...', 'info');
+          log('Authorizing with server and verifying WABA...', 'info');
           document.getElementById('signup-btn').disabled = true;
 
           try {
@@ -212,6 +218,7 @@
               },
               body: JSON.stringify({
                 code: this.code,
+                accessToken: this.accessToken,
                 hints: this.sessionHints || {}
               })
             });
@@ -254,10 +261,10 @@
     // 4. FB Login Callback
     function fbLoginCallback(response) {
       log('FB.login callback received: ' + JSON.stringify(response), 'info');
-      if (response.authResponse?.code) {
-        coordinator.setAuthCode(response.authResponse.code);
+      if (response.authResponse?.code || response.authResponse?.accessToken) {
+        coordinator.setAuthData(response.authResponse);
       } else {
-        const errorMsg = response.error_message || response.status || 'No auth code returned';
+        const errorMsg = response.error_message || response.status || 'No auth token returned';
         log(`Popup closed without authorization (${errorMsg}).`, 'warn');
         coordinator.reset();
       }
