@@ -106,7 +106,7 @@
         Connect your WhatsApp Business Account to enable automated notifications and messaging.
       </p>
 
-      <div id="actions-area">
+      <div id="actions-disconnected" style="display: block;">
         <button id="signup-btn" class="btn btn-fb" onclick="launchWhatsAppSignup()">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
             <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/>
@@ -117,10 +117,10 @@
         <div style="margin-top: 16px; padding: 12px; background: #e7f7ed; border-radius: 8px; border: 1px solid #b7ebc7; text-align: left;">
           <label style="display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; cursor: pointer; color: #075e54;">
             <input id="coexistence-toggle" type="checkbox" checked />
-            Enable Coexistence (Use WhatsApp Business mobile app & API together)
+            Enable Coexistence (WhatsApp Business Mobile App + Cloud API)
           </label>
           <div style="font-size: 12px; color: #444; margin-top: 4px;">
-            Allows your phone number to stay active in your mobile WhatsApp Business App while simultaneously connecting to the Cloud API.
+            Preserves your mobile WhatsApp Business app and messages while pairing with Cloud API automation.
           </div>
         </div>
 
@@ -133,6 +133,10 @@
             </div>
           </details>
         </div>
+      </div>
+
+      <div id="actions-connected" style="display: none; margin-bottom: 20px;">
+        <button class="btn btn-danger" onclick="disconnectWhatsApp()">Disconnect WhatsApp</button>
       </div>
 
       <div id="phone-container" class="phone-list" style="display: none;">
@@ -284,7 +288,7 @@
         const payload = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
         if (payload.type === 'WA_EMBEDDED_SIGNUP') {
           log(`Session message received (${payload.event}): ` + JSON.stringify(payload.data || {}), 'info');
-          if (payload.event === 'FINISH') {
+          if (payload.event === 'FINISH' || payload.event === 'FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING') {
             coordinator.setSessionData(payload.data);
           } else if (payload.event === 'CANCEL') {
             log(`Embedded Signup flow abandoned at step: ${payload.data?.current_step || 'unknown'}`, 'warn');
@@ -336,6 +340,7 @@
       if (isCoexistence) {
         extrasPayload.featureType = 'whatsapp_business_app_onboarding';
         extrasPayload.sessionInfoVersion = '3';
+        extrasPayload.version = 'v4';
         log(`Spawning Coexistence Embedded Signup (Linking Mobile WhatsApp Business App)...`, 'info');
       } else {
         log(`Spawning Standard WhatsApp Cloud API Signup...`, 'info');
@@ -367,15 +372,15 @@
         badge.className = `status-badge status-${data.status || 'DISCONNECTED'}`;
         badge.innerText = data.status || 'DISCONNECTED';
 
-        const actionsArea = document.getElementById('actions-area');
+        const actionsDisconnected = document.getElementById('actions-disconnected');
+        const actionsConnected = document.getElementById('actions-connected');
         const phoneContainer = document.getElementById('phone-container');
         const phoneItems = document.getElementById('phone-items');
 
         if (data.status === 'CONNECTED') {
-          document.getElementById('status-desc').innerText = `WABA ID: ${data.wabaId}`;
-          actionsArea.innerHTML = `
-            <button class="btn btn-danger" onclick="disconnectWhatsApp()">Disconnect WhatsApp</button>
-          `;
+          document.getElementById('status-desc').innerText = `Connected WABA ID: ${data.wabaId}`;
+          if (actionsDisconnected) actionsDisconnected.style.display = 'none';
+          if (actionsConnected) actionsConnected.style.display = 'block';
 
           if (data.phoneNumbers && data.phoneNumbers.length > 0) {
             phoneContainer.style.display = 'block';
@@ -402,14 +407,8 @@
           }
         } else {
           document.getElementById('status-desc').innerText = 'Connect your WhatsApp Business Account to enable automated notifications and messaging.';
-          actionsArea.innerHTML = `
-            <button id="signup-btn" class="btn btn-fb" onclick="launchWhatsAppSignup()">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/>
-              </svg>
-              Connect with WhatsApp
-            </button>
-          `;
+          if (actionsDisconnected) actionsDisconnected.style.display = 'block';
+          if (actionsConnected) actionsConnected.style.display = 'none';
           phoneContainer.style.display = 'none';
         }
       } catch (err) {
@@ -433,6 +432,11 @@
         });
         const reqData = await reqRes.json();
         if (!reqRes.ok || reqData.error) {
+          if (reqData.deleted) {
+            log(`Phone number notice: ${reqData.error}`, 'warn');
+            await refreshStatus();
+            return;
+          }
           throw new Error(reqData.error || 'Failed to request code');
         }
 

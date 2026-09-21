@@ -78,6 +78,15 @@ export const onboardingController = {
 
       // 6. Query Discovered Phone Numbers
       const phoneList = await metaGraphService.getPhoneNumbers(candidateWabaId, accessToken);
+      const activeMetaPhoneIds = new Set(phoneList.map((p) => p.id));
+
+      // Remove numbers that no longer exist in Meta
+      const existingPhones = await db.getPhonesByConnectionId(connection.id);
+      for (const existing of existingPhones) {
+        if (!activeMetaPhoneIds.has(existing.phoneNumberId)) {
+          await db.deletePhoneNumber(existing.phoneNumberId);
+        }
+      }
 
       // Persist discovered phone numbers
       for (const phone of phoneList) {
@@ -161,6 +170,36 @@ export const onboardingController = {
       });
     }
 
+    // Live sync phone numbers with Meta if connected
+    if (connection.status === 'CONNECTED' && connection.accessTokenEncrypted) {
+      try {
+        const accessToken = decryptToken(connection.accessTokenEncrypted);
+        const livePhones = await metaGraphService.getPhoneNumbers(connection.wabaId, accessToken);
+        const livePhoneIds = new Set(livePhones.map((p) => p.id));
+
+        const existingPhones = await db.getPhonesByConnectionId(connection.id);
+        for (const existing of existingPhones) {
+          if (!livePhoneIds.has(existing.phoneNumberId)) {
+            await db.deletePhoneNumber(existing.phoneNumberId);
+          }
+        }
+
+        for (const phone of livePhones) {
+          await db.upsertPhoneNumber({
+            connectionId: connection.id,
+            phoneNumberId: phone.id,
+            displayPhoneNumber: phone.display_phone_number,
+            verifiedName: phone.verified_name,
+            qualityRating: phone.quality_rating,
+            codeVerificationStatus: phone.code_verification_status,
+            isRegistered: phone.code_verification_status === 'VERIFIED'
+          });
+        }
+      } catch (syncErr) {
+        console.warn('[Phone Sync Warning]', syncErr.message);
+      }
+    }
+
     const phoneNumbers = await db.getPhonesByConnectionId(connection.id);
 
     return res.json({
@@ -201,6 +240,13 @@ export const onboardingController = {
       return res.json({ success: true, message: `Verification code sent via ${method || 'SMS'}.`, result });
     } catch (err) {
       console.error('[Request Code Error]', err);
+      if (err.message && (err.message.includes('has been deleted') || err.message.includes('#33'))) {
+        await db.deletePhoneNumber(phoneNumberId);
+        return res.status(410).json({
+          error: 'This phone number has been deleted from Meta WhatsApp Manager. The dashboard has been updated.',
+          deleted: true
+        });
+      }
       return res.status(500).json({ error: err.message });
     }
   },

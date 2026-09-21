@@ -163,6 +163,13 @@ export const db = {
     return newPhone;
   },
 
+  async deletePhoneNumber(phoneNumberId) {
+    const data = readDb();
+    data.phoneNumbers = data.phoneNumbers.filter((p) => p.phoneNumberId !== phoneNumberId);
+    writeDb(data);
+    return true;
+  },
+
   // --- Webhook Events ---
   async createWebhookEvent({ wabaId, eventType, payload }) {
     const data = readDb();
