@@ -6,6 +6,7 @@ import { chatRouter } from './modules/chat/chat.routes.js';
 import { whatsappRouter } from './modules/whatsapp/whatsapp.routes.js';
 import { webhooksRouter } from './modules/webhooks/webhooks.routes.js';
 import { aiRouter } from './modules/ai/ai.routes.js';
+import { customersRouter } from './modules/customers/customers.routes.js';
 
 export const apiRouter = Router();
 
@@ -23,8 +24,10 @@ apiRouter.use('/catalog', catalogRouter);
 apiRouter.use('/orders', ordersRouter);
 apiRouter.use('/payments', paymentsRouter);
 apiRouter.use('/chat', chatRouter);
+apiRouter.use('/customers', customersRouter);
 apiRouter.use('/whatsapp', whatsappRouter);
 apiRouter.use('/webhooks', webhooksRouter);
 apiRouter.use('/ai', aiRouter);
+
 
 

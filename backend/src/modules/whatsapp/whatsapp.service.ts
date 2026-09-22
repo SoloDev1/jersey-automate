@@ -323,7 +323,7 @@ export const whatsappService = {
 
     const captionText = [
       `⚽ *${options.jerseyTitle}*`,
-      `💰 Price: *${formattedPrice}*`,
+      options.price > 0 ? `💰 Price: *${formattedPrice}*` : '',
       options.description ? `\n📝 ${options.description}` : '',
       options.paymentUrl ? `\n💳 *Order Here:* ${options.paymentUrl}` : ''
     ]

@@ -28,6 +28,10 @@ export interface ConversationRecord {
   updatedAt: string;
   customerPhone?: string;
   customerName?: string;
+  customerNotes?: string | null;
+  customerAddress?: string | null;
+  customerTotalOrders?: number;
+  customerTotalSpend?: number;
 }
 
 export interface SendMessageDTO {

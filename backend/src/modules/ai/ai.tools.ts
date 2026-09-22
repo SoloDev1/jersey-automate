@@ -3,6 +3,9 @@ import { catalogService } from '../catalog/catalog.service.js';
 import { ordersService } from '../orders/orders.service.js';
 import { paymentsService } from '../payments/payments.service.js';
 import { JerseySize } from '../catalog/catalog.types.js';
+import { supabase } from '../../core/database/supabase.js';
+import { whatsappService } from '../whatsapp/whatsapp.service.js';
+import { chatRepository } from '../chat/chat.repository.js';
 
 export const AI_TOOLS: ToolDefinition[] = [
   {
@@ -27,6 +30,23 @@ export const AI_TOOLS: ToolDefinition[] = [
           }
         },
         required: ['query']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'send_jersey_photo',
+      description: "Sends the real, official photo card of a jersey directly to the customer's WhatsApp phone as an image. Call this whenever recommending kits or when the customer asks to see what a jersey looks like.",
+      parameters: {
+        type: 'object',
+        properties: {
+          jerseyId: {
+            type: 'string',
+            description: 'The UUID of the jersey from search_catalog results'
+          }
+        },
+        required: ['jerseyId']
       }
     }
   },
@@ -120,12 +140,65 @@ export const toolHandlers = {
         season: j.season,
         kitType: j.kitType,
         price: j.basePrice,
-        imageUrl: j.imageUrl,
+        hasPhoto: Boolean(j.imageUrl),
         availableSizes: j.inventory
           ?.filter((inv) => inv.quantityAvailable > 0)
           .map((inv) => inv.size)
       }))
     };
+  },
+
+  /**
+   * Dispatches the official kit photo directly to customer's WhatsApp as an image card.
+   */
+  async send_jersey_photo(
+    organizationId: string,
+    conversationId: string,
+    customerPhone: string,
+    args: { jerseyId: string }
+  ): Promise<any> {
+    try {
+      const jersey = await catalogService.getJersey(organizationId, args.jerseyId);
+      if (!jersey) return { error: 'Jersey not found' };
+
+      const { data: settings } = await supabase
+        .from('settings')
+        .select('currency')
+        .eq('organization_id', organizationId)
+        .maybeSingle();
+
+      const currency = settings?.currency || 'NGN';
+
+      // Send actual photo card via WhatsApp Cloud API
+      const metaMessageId = await whatsappService.sendKitCard(organizationId, {
+        toPhone: customerPhone,
+        jerseyTitle: jersey.title,
+        imageUrl: jersey.imageUrl,
+        price: jersey.basePrice,
+        currency,
+        description: jersey.description
+      });
+
+      // Record outbound kit card message in CRM
+      await chatRepository.insertMessage(organizationId, {
+        conversationId,
+        metaMessageId,
+        direction: 'outbound',
+        type: 'interactive_kit',
+        body: `⚽ ${jersey.title} - ${currency} ${jersey.basePrice}`,
+        mediaUrl: jersey.imageUrl,
+        jerseyId: jersey.id,
+        deliveryStatus: 'sent'
+      });
+
+      return {
+        success: true,
+        sentJersey: jersey.title,
+        message: `Photo card for "${jersey.title}" has been sent directly to the customer's WhatsApp.`
+      };
+    } catch (error: any) {
+      return { error: error.message || 'Failed to send jersey photo' };
+    }
   },
 
   /**

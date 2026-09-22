@@ -11,13 +11,16 @@ Your goal is to help customers find authentic club and national team kits, verif
 
 GUIDELINES:
 1. Tone: Friendly, concise, enthusiastic about football. Format replies cleanly for mobile WhatsApp reading (use bolding and emojis like ⚽ sparingly).
-2. NEVER guess or fabricate prices or stock:
+2. WhatsApp Media & Images:
+   - CRITICAL: NEVER output Markdown image tags like \`![alt](url)\` or raw image links in your text messages. WhatsApp does NOT support markdown images and will display broken text.
+   - When presenting kits or when a customer asks to see what a jersey looks like, ALWAYS call the tool \`send_jersey_photo\` with the \`jerseyId\` to dispatch the official photo card directly to their WhatsApp phone.
+3. NEVER guess or fabricate prices or stock:
    - ALWAYS call \`search_catalog\` to find kits when a customer mentions a team, club, or season.
    - ALWAYS call \`check_stock\` when a customer asks for a specific size.
-3. Closing Sales:
+4. Closing Sales:
    - When a customer is ready to buy and has picked their size, use \`create_checkout\` to generate a secure Paystack payment link and hold their jersey for 15 minutes.
    - Inform the customer that their kit is reserved for 15 minutes while they complete checkout.
-4. Keep responses under 3-4 paragraphs. If an item is out of stock, suggest checking other kits or waiting for restocks.`;
+5. Keep responses under 3-4 paragraphs. If an item is out of stock, suggest checking other kits or waiting for restocks.`;
 
 export class AiService {
   private provider: AiProvider;
@@ -98,6 +101,13 @@ export class AiService {
           let toolOutput: any;
           if (fnName === 'search_catalog') {
             toolOutput = await toolHandlers.search_catalog(organizationId, parsedArgs);
+          } else if (fnName === 'send_jersey_photo') {
+            toolOutput = await toolHandlers.send_jersey_photo(
+              organizationId,
+              conversationId,
+              customer.phoneNumber,
+              parsedArgs
+            );
           } else if (fnName === 'check_stock') {
             toolOutput = await toolHandlers.check_stock(organizationId, parsedArgs);
           } else if (fnName === 'create_checkout') {
@@ -130,10 +140,48 @@ export class AiService {
         };
       }
 
-      const replyText = aiResponse.text?.trim();
-      if (!replyText) return;
+      // 5. Intercept and extract any markdown image tags ![alt](url) to dispatch as real WhatsApp photos
+      const markdownImgRegex = /!\[([^\]]*)\]\((https?:\/\/[^\s\)]+)\)/g;
+      const extractedImages: Array<{ caption: string; url: string }> = [];
+      let match: RegExpExecArray | null;
+      while ((match = markdownImgRegex.exec(aiResponse.text || '')) !== null) {
+        extractedImages.push({ caption: match[1], url: match[2] });
+      }
 
-      // 5. Atomic Concurrency-Safe Budget Enforcement
+      // Strip markdown image syntax from text so WhatsApp never gets raw markdown
+      const cleanReplyText = (aiResponse.text || '')
+        .replace(markdownImgRegex, '')
+        .replace(/\n\s*\n\s*\n/g, '\n\n')
+        .trim();
+
+      // If markdown image tags were detected in the text, dispatch them as real WhatsApp image cards
+      for (const img of extractedImages) {
+        try {
+          const photoMetaId = await whatsappService.sendKitCard(organizationId, {
+            toPhone: customer.phoneNumber,
+            jerseyTitle: img.caption || 'Jersey Kit',
+            imageUrl: img.url,
+            price: 0,
+            currency: 'NGN'
+          });
+
+          await chatRepository.insertMessage(organizationId, {
+            conversationId,
+            metaMessageId: photoMetaId,
+            direction: 'outbound',
+            type: 'interactive_kit',
+            body: img.caption || 'Official Kit Photo',
+            mediaUrl: img.url,
+            deliveryStatus: 'sent'
+          });
+        } catch (imgErr: any) {
+          console.warn('[AI Media Interceptor] Failed to dispatch extracted image:', imgErr?.message);
+        }
+      }
+
+      if (!cleanReplyText) return;
+
+      // 6. Atomic Concurrency-Safe Budget Enforcement
       const costUsd = this.provider.estimateCostUsd(
         aiResponse.usage.promptTokens,
         aiResponse.usage.completionTokens
@@ -163,19 +211,19 @@ export class AiService {
         return;
       }
 
-      // 6. Dispatch outbound response to customer WhatsApp
+      // 7. Dispatch outbound text response to customer WhatsApp
       const metaMessageId = await whatsappService.sendTextMessage(organizationId, {
         toPhone: customer.phoneNumber,
-        body: replyText
+        body: cleanReplyText
       });
 
-      // 7. Persist AI outbound message to CRM database
+      // 8. Persist AI outbound message to CRM database
       await chatRepository.insertMessage(organizationId, {
         conversationId,
         metaMessageId,
         direction: 'outbound',
         type: 'text',
-        body: replyText,
+        body: cleanReplyText,
         deliveryStatus: 'sent'
       });
     } catch (error: any) {

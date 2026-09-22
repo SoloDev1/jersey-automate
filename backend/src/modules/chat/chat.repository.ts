@@ -20,7 +20,7 @@ export const chatRepository = {
 
     let query = supabase
       .from('conversations')
-      .select('*, customers(phone_number, display_name)', { count: 'exact' })
+      .select('*, customers(phone_number, display_name, shipping_address, notes, total_orders, total_spend)', { count: 'exact' })
       .eq('organization_id', organizationId);
 
     if (filter.status) {
@@ -47,7 +47,11 @@ export const chatRepository = {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       customerPhone: row.customers?.phone_number,
-      customerName: row.customers?.display_name
+      customerName: row.customers?.display_name,
+      customerAddress: row.customers?.shipping_address,
+      customerNotes: row.customers?.notes,
+      customerTotalOrders: row.customers?.total_orders || 0,
+      customerTotalSpend: Number(row.customers?.total_spend) || 0,
     }));
 
     return {
@@ -70,7 +74,7 @@ export const chatRepository = {
   ): Promise<ConversationRecord | null> {
     const { data, error } = await supabase
       .from('conversations')
-      .select('*, customers(phone_number, display_name)')
+      .select('*, customers(phone_number, display_name, shipping_address, notes, total_orders, total_spend)')
       .eq('organization_id', organizationId)
       .eq('id', conversationId)
       .maybeSingle();
@@ -89,7 +93,11 @@ export const chatRepository = {
       createdAt: data.created_at,
       updatedAt: data.updated_at,
       customerPhone: data.customers?.phone_number,
-      customerName: data.customers?.display_name
+      customerName: data.customers?.display_name,
+      customerAddress: data.customers?.shipping_address,
+      customerNotes: data.customers?.notes,
+      customerTotalOrders: data.customers?.total_orders || 0,
+      customerTotalSpend: Number(data.customers?.total_spend) || 0,
     };
   },
 
