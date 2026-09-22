@@ -38,6 +38,13 @@ export const chatService = {
     await chatRepository.markAsRead(organizationId, conversationId);
 
     const messages = await chatRepository.getMessages(organizationId, conversationId);
+
+    // Trigger double blue checkmarks (Seen) on customer's WhatsApp device
+    const latestInbound = messages.filter((m) => m.direction === 'inbound' && m.metaMessageId).pop();
+    if (latestInbound?.metaMessageId) {
+      whatsappService.markMessageAsRead(organizationId, latestInbound.metaMessageId).catch(() => {});
+    }
+
     return { conversation, messages };
   },
 

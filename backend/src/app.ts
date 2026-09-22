@@ -59,8 +59,9 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// Mount Versioned API Routes
+// Mount Versioned API Routes (and /api alias for webhook backward compatibility)
 app.use('/api/v1', apiRouter);
+app.use('/api', apiRouter);
 
 // Centralized Error Handling
 app.use(errorHandler);

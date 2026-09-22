@@ -357,5 +357,70 @@ export const whatsappService = {
     } catch (error) {
       throw sanitizeMetaError(error);
     }
+  },
+
+  /**
+   * Marks an incoming WhatsApp message as read (triggers blue checkmarks on customer device).
+   */
+  async markMessageAsRead(organizationId: string, messageId: string): Promise<boolean> {
+    const creds = await this.getTenantCredentials(organizationId);
+    if (!creds.isConnected || !creds.phoneNumberId) return false;
+
+    const url = `${GRAPH_API_BASE}/${creds.phoneNumberId}/messages`;
+    try {
+      await axios.post(
+        url,
+        {
+          messaging_product: 'whatsapp',
+          status: 'read',
+          message_id: messageId
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${creds.accessToken}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 5000
+        }
+      );
+      return true;
+    } catch {
+      // Non-blocking: fail silently if message is already read or expired
+      return false;
+    }
+  },
+
+  /**
+   * Shows a typing indicator ("typing...") on customer's WhatsApp chat.
+   * Remains active until reply is sent or expires after 25 seconds.
+   */
+  async sendTypingIndicator(organizationId: string, messageId: string): Promise<boolean> {
+    const creds = await this.getTenantCredentials(organizationId);
+    if (!creds.isConnected || !creds.phoneNumberId) return false;
+
+    const url = `${GRAPH_API_BASE}/${creds.phoneNumberId}/messages`;
+    try {
+      await axios.post(
+        url,
+        {
+          messaging_product: 'whatsapp',
+          status: 'read',
+          message_id: messageId,
+          typing_indicator: {
+            type: 'text'
+          }
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${creds.accessToken}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 5000
+        }
+      );
+      return true;
+    } catch {
+      return false;
+    }
   }
 };
