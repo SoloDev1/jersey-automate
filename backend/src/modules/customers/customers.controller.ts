@@ -83,4 +83,61 @@ export const customersController = {
       next(error);
     }
   },
+
+  /**
+   * PATCH /api/v1/customers/:id
+   * Updates customer profile fields (display_name, shipping_address, notes)
+   */
+  async update(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { id } = req.params;
+      const organizationId = req.organizationId;
+      const { name, displayName, address, shippingAddress, notes } = req.body;
+
+      const updates: Record<string, any> = {
+        updated_at: new Date().toISOString()
+      };
+
+      if (name !== undefined || displayName !== undefined) {
+        updates.display_name = (name || displayName || '').trim();
+      }
+      if (address !== undefined || shippingAddress !== undefined) {
+        updates.shipping_address = (address || shippingAddress || '').trim();
+      }
+      if (notes !== undefined) {
+        updates.notes = (notes || '').trim();
+      }
+
+      const { data, error } = await supabase
+        .from('customers')
+        .update(updates)
+        .eq('organization_id', organizationId)
+        .eq('id', id)
+        .select('*')
+        .single();
+
+      if (error || !data) {
+        res.status(404).json({ success: false, message: 'Customer not found or update failed' });
+        return;
+      }
+
+      res.json({
+        success: true,
+        message: 'Customer updated successfully',
+        data: {
+          id: data.id,
+          name: data.display_name || 'Customer',
+          phone: data.phone_number,
+          address: data.shipping_address,
+          notes: data.notes,
+          totalOrders: data.total_orders || 0,
+          totalSpend: Number(data.total_spend) || 0,
+          lastContactAt: data.last_contact_at,
+          createdAt: data.created_at,
+        }
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
 };

@@ -5,3 +5,4 @@ export const customersRouter = Router();
 
 customersRouter.get('/', customersController.list);
 customersRouter.get('/:id', customersController.getById);
+customersRouter.patch('/:id', customersController.update);

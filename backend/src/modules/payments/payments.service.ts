@@ -229,6 +229,67 @@ export const paymentsService = {
       // Non-blocking metric increment
     }
 
+    // 8. Dispatch automated WhatsApp receipt & update CRM chat
+    if (order.customerPhone) {
+      try {
+        const { whatsappService } = await import('../whatsapp/whatsapp.service.js');
+        const { chatRepository } = await import('../chat/chat.repository.js');
+
+        const itemsSummary = (order.items || [])
+          .map((i) => `• *${i.jerseyTitle || 'Jersey'}* (Size: *${i.size}*, Qty: ${i.quantity})`)
+          .join('\n');
+
+        const formattedAmount = new Intl.NumberFormat('en-US', {
+          style: 'currency',
+          currency: order.currency
+        }).format(order.totalAmount);
+
+        const customerGreeting = order.customerName ? ` ${order.customerName}` : '';
+        const receiptMessage = [
+          `🎉 *PAYMENT RECEIVED & CONFIRMED!*`,
+          ``,
+          `Thank you${customerGreeting}! We have successfully received your payment of *${formattedAmount}*.`,
+          ``,
+          `📋 *Receipt & Order Details:*`,
+          `• *Order Number:* #${order.orderNumber}`,
+          `• *Payment Status:* Paid via ${data.channel || 'Paystack'} ✅`,
+          itemsSummary ? `\n*Items Ordered:*\n${itemsSummary}` : '',
+          order.shippingAddress ? `• *Delivery Address:* ${order.shippingAddress}` : '',
+          ``,
+          `📦 *What happens next?*`,
+          `Your kit is now being packaged and prepared for shipping. We will notify you once your package is on its way! 🚚`
+        ]
+          .filter(Boolean)
+          .join('\n');
+
+        // Dispatch receipt via WhatsApp
+        const metaMessageId = await whatsappService.sendTextMessage(order.organizationId, {
+          toPhone: order.customerPhone,
+          body: receiptMessage
+        });
+
+        // Link to customer conversation in CRM
+        const conversation = await chatRepository.findOrCreateConversation(
+          order.organizationId,
+          order.customerId
+        );
+
+        await chatRepository.insertMessage(order.organizationId, {
+          conversationId: conversation.id,
+          metaMessageId,
+          direction: 'outbound',
+          type: 'text',
+          body: receiptMessage,
+          deliveryStatus: 'sent'
+        });
+      } catch (notifyErr: any) {
+        console.warn(
+          `[Payment Notification] Failed to dispatch WhatsApp receipt for order ${order.id}:`,
+          notifyErr?.message
+        );
+      }
+    }
+
     return {
       id: paymentRecord.id,
       organizationId: paymentRecord.organization_id,

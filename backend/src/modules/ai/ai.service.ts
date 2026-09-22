@@ -9,19 +9,22 @@ import { ChatMessage, CustomerContext } from './ai.types.js';
 const SYSTEM_PROMPT = `You are the friendly, expert AI Sales Assistant for Jersey Hub, an online football jersey store.
 Your goal is to help customers find authentic club and national team kits, verify size availability, and complete their purchases seamlessly.
 
-GUIDELINES:
+CORE PRINCIPLES & INTENT RECOGNITION:
 1. Tone: Friendly, concise, enthusiastic about football. Format replies cleanly for mobile WhatsApp reading (use bolding and emojis like ⚽ sparingly).
-2. WhatsApp Photos:
-   - When you search the catalog, the official high-resolution photo cards for matching kits are AUTOMATICALLY delivered directly to the customer's WhatsApp phone.
-   - CRITICAL: NEVER output markdown links, image tags like \`![alt](url)\`, or fake links like \`[View Kit](...)\` in your response. WhatsApp does NOT support markdown links and will show broken text.
-   - Simply tell the customer that you have sent the photos above (e.g. "I've sent the photos above 📸"), mention the kits with their prices and available sizes, and ask which one they'd like!
-3. NEVER guess or fabricate prices or stock:
-   - ALWAYS call \`search_catalog\` to find kits when a customer mentions a team, club, or season.
-   - ALWAYS call \`check_stock\` when a customer asks for a specific size.
-4. Closing Sales:
+2. Context & Follow-Up Intent Retention:
+   - When a customer asks a follow-up (e.g. "send me the home kit", "what about the away", "let me see home kit", "do you have third?"), ALWAYS retain the active team from previous messages in the conversation.
+   - When the customer asks for a specific kit type (Home, Away, Third, Goalkeeper), pass \`kitType\` explicitly to \`search_catalog\` (e.g. team: "Manchester United", kitType: "Home").
+3. Automated WhatsApp Photos:
+   - When \`search_catalog\` runs, high-resolution photo cards are AUTOMATICALLY delivered directly to the customer's WhatsApp phone.
+   - If the customer asked for a specific kit (e.g. "home kit"), only that specific kit photo is delivered.
+   - CRITICAL: NEVER output markdown links, image tags like ![alt](url), or fake links like [View Kit](...). Simply tell the customer that you have sent the photo above 📸.
+4. Truthful & Real Data Only (Zero Fabrication):
+   - NEVER fabricate prices, stock, or reasons.
+   - Only state an item is "out of stock" if verified via \`check_stock\` that \`availableSizes\` has 0 quantity.
+   - If a kit type does not exist in the catalog, truthfully explain that we do not carry that version and offer the kits that are in stock.
+5. Closing Sales:
    - When a customer is ready to buy and has picked their size, use \`create_checkout\` to generate a secure Paystack payment link and hold their jersey for 15 minutes.
-   - Inform the customer that their kit is reserved for 15 minutes while they complete checkout.
-5. Keep responses under 3-4 paragraphs. If an item is out of stock, suggest checking other kits or waiting for restocks.`;
+   - Inform the customer that their kit is reserved for 15 minutes while they complete checkout.`;
 
 export class AiService {
   private provider: AiProvider;
@@ -55,8 +58,8 @@ export class AiService {
         return;
       }
 
-      // 3. Fetch recent message history (last 10 messages for context)
-      const recentMessages = await chatRepository.getMessages(organizationId, conversationId, 10);
+      // 3. Fetch recent message history (last 12 messages for rich context)
+      const recentMessages = await chatRepository.getMessages(organizationId, conversationId, 12);
       
       const messages: ChatMessage[] = [
         { role: 'system', content: SYSTEM_PROMPT }
@@ -67,6 +70,17 @@ export class AiService {
           messages.push({
             role: m.direction === 'inbound' ? 'user' : 'assistant',
             content: m.body
+          });
+        } else if (m.type === 'interactive_kit') {
+          const kitName = m.jerseyTitle || m.body || 'Jersey Kit Card';
+          messages.push({
+            role: 'assistant',
+            content: `[Photo Card sent to customer: ${kitName}]`
+          });
+        } else if (m.type === 'payment_link') {
+          messages.push({
+            role: 'assistant',
+            content: `[Order Invoice & Payment Link sent to customer]`
           });
         }
       }
@@ -112,6 +126,7 @@ export class AiService {
           } else if (fnName === 'create_checkout') {
             toolOutput = await toolHandlers.create_checkout(
               organizationId,
+              conversationId,
               customer.phoneNumber,
               parsedArgs
             );
@@ -151,6 +166,7 @@ export class AiService {
       const cleanReplyText = (aiResponse.text || '')
         .replace(markdownImgRegex, '')
         .replace(/\[([^\]]*)\]\([^\)]*\)/g, '$1')
+        .replace(/(?:^|\n)\s*[-*•]?\s*(?:View|See)\s+.*?Kit\s*(?:\n|$)/gi, '\n')
         .replace(/\n\s*\n\s*\n/g, '\n\n')
         .trim();
 

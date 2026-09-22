@@ -12,24 +12,32 @@ export const AI_TOOLS: ToolDefinition[] = [
     type: 'function',
     function: {
       name: 'search_catalog',
-      description: 'Search store catalog for football jerseys by team, club, country, league, kit type, or season. When matches are found, high-res photos are automatically delivered directly to the customer WhatsApp.',
+      description: 'Search store catalog for football jerseys. Photos are automatically delivered to WhatsApp. Always supply team name (e.g. "Manchester United") and kitType (e.g. "Home") if requested by customer.',
       parameters: {
         type: 'object',
         properties: {
-          query: {
+          team: {
             type: 'string',
-            description: 'Keywords to search (e.g. "Arsenal", "Real Madrid", "Barcelona home jersey", "Nigeria 2024")'
+            description: 'The club or national team name (e.g. "Manchester United", "Arsenal", "Real Madrid"). Retain the active club from prior messages if the customer asks a follow-up like "send me the home kit" or "what about the away".'
+          },
+          kitType: {
+            type: 'string',
+            enum: ['Home', 'Away', 'Third', 'Fourth', 'Goalkeeper'],
+            description: 'Specific kit type if requested by customer (e.g. "Home", "Away", "Third"). Use this whenever the customer asks for a specific kit type like "home kit", "away kit", etc.'
           },
           league: {
             type: 'string',
             description: 'Optional league name (e.g. "Premier League", "La Liga", "Serie A")'
           },
-          kitType: {
+          season: {
             type: 'string',
-            description: 'Optional kit type (e.g. "Home", "Away", "Third")'
+            description: 'Optional season (e.g. "2026/27")'
+          },
+          query: {
+            type: 'string',
+            description: 'Optional general keyword fallback'
           }
-        },
-        required: ['query']
+        }
       }
     }
   },
@@ -99,19 +107,45 @@ export const toolHandlers = {
     organizationId: string,
     conversationId: string,
     customerPhone: string,
-    args: { query: string; league?: string; kitType?: string }
+    args: { team?: string; kitType?: string; league?: string; season?: string; query?: string }
   ): Promise<any> {
+    const effectiveTeam = args.team || args.query;
+    const effectiveKitType = args.kitType;
+
     const result = await catalogService.getCatalog(organizationId, {
-      search: args.query,
+      team: args.team,
+      kitType: effectiveKitType,
       league: args.league,
-      kitType: args.kitType,
-      limit: 4
+      season: args.season,
+      search: args.query,
+      limit: effectiveKitType ? 2 : 4
     });
 
     if (result.data.length === 0) {
+      // If a specific kitType was requested (e.g. "Home"), check if the team exists with other kits!
+      if (effectiveTeam && effectiveKitType) {
+        const teamCheck = await catalogService.getCatalog(organizationId, {
+          team: effectiveTeam,
+          limit: 5
+        });
+
+        if (teamCheck.data.length > 0) {
+          const availableTypes = [...new Set(teamCheck.data.map((j) => j.kitType))];
+          return {
+            found: false,
+            reason: 'SPECIFIC_KIT_TYPE_UNAVAILABLE',
+            requestedKitType: effectiveKitType,
+            availableKitTypes: availableTypes,
+            team: teamCheck.data[0].team,
+            instruction: `We do not carry the ${effectiveKitType} kit for ${teamCheck.data[0].team}. However, we DO have the ${availableTypes.join(', ')} kit(s) available. Truthfully tell the customer this and ask if they would like to see one of the available kits.`
+          };
+        }
+      }
+
       return {
         found: false,
-        message: `No jerseys found matching "${args.query}". Ask the customer if they would like another team or season.`
+        reason: 'NOT_FOUND',
+        message: `No jerseys found matching the request. Truthfully tell the customer we do not have this in stock and ask if they would like another team.`
       };
     }
 
@@ -124,8 +158,9 @@ export const toolHandlers = {
 
     const currency = settings?.currency || 'NGN';
 
-    // Automatically send high-res photo cards directly to customer's WhatsApp for the top matches (up to 3)
-    const topMatches = result.data.slice(0, 3);
+    // If customer requested a specific kit type (e.g. Home), dispatch ONLY that single photo card
+    const maxPhotos = effectiveKitType ? 1 : Math.min(result.data.length, 3);
+    const topMatches = result.data.slice(0, maxPhotos);
     const sentPhotos: string[] = [];
 
     for (const jersey of topMatches) {
@@ -174,7 +209,7 @@ export const toolHandlers = {
           ?.filter((inv) => inv.quantityAvailable > 0)
           .map((inv) => inv.size)
       })),
-      instruction: 'The official photo cards for these kits have ALREADY been delivered directly to the customer as real WhatsApp photo cards above! Do NOT output any links, URLs, or markdown links. Simply inform the customer you sent the photos above, mention the kits, prices, and available sizes, and ask which one they prefer.'
+      instruction: 'The official photo card(s) have ALREADY been delivered directly to the customer as real WhatsApp photo cards above! Do NOT output any links, URLs, or markdown links. Confirm you sent the photo above, mention the kit(s), prices, and available sizes, and ask what size they need.'
     };
   },
 
@@ -212,10 +247,11 @@ export const toolHandlers = {
 
   /**
    * Mutating checkout tool handler.
-   * Atomic 15-minute stock hold + Paystack checkout link creation.
+   * Atomic 15-minute stock hold + Paystack checkout link creation + clean WhatsApp payment card delivery.
    */
   async create_checkout(
     organizationId: string,
+    conversationId: string,
     customerPhone: string,
     args: {
       jerseyId: string;
@@ -251,14 +287,65 @@ export const toolHandlers = {
         `${customerPhone.replace(/\+/g, '')}@whatsapp.customer`
       );
 
+      // 3. Fetch jersey details for invoice summary
+      const jersey = await catalogService.getJersey(organizationId, args.jerseyId);
+
+      // 4. Format clean, high-converting WhatsApp checkout message
+      const formattedAmount = new Intl.NumberFormat('en-US', {
+        style: 'currency',
+        currency: order.currency
+      }).format(order.totalAmount);
+
+      const customPrint = [args.customName, args.customNumber ? `#${args.customNumber}` : '']
+        .filter(Boolean)
+        .join(' ');
+
+      const checkoutCard = [
+        `🧾 *ORDER CONFIRMATION & CHECKOUT*`,
+        ``,
+        `Your kit has been held for *15 minutes* ⏳`,
+        ``,
+        `⚽ *Item:* ${jersey?.title || 'Football Kit'}`,
+        `📏 *Size:* *${args.size}* (Qty: ${quantity})`,
+        customPrint ? `🔢 *Custom Print:* ${customPrint}` : '',
+        args.shippingAddress ? `🚚 *Delivery To:* ${args.shippingAddress}` : '',
+        ``,
+        `─────────────────────────`,
+        `💰 *Total Amount:* *${formattedAmount}*`,
+        `─────────────────────────`,
+        ``,
+        `Tap the secure Paystack link below to complete payment:`,
+        `👉 ${paymentInit.authorizationUrl}`,
+        ``,
+        `🔒 _Supports Debit Cards, Bank Transfer & USSD._`
+      ]
+        .filter(Boolean)
+        .join('\n');
+
+      // 5. Automatically dispatch clean checkout message via WhatsApp Cloud API
+      const metaMessageId = await whatsappService.sendTextMessage(organizationId, {
+        toPhone: customerPhone,
+        body: checkoutCard
+      });
+
+      // 6. Record checkout message in CRM chat thread
+      await chatRepository.insertMessage(organizationId, {
+        conversationId,
+        metaMessageId,
+        direction: 'outbound',
+        type: 'payment_link',
+        body: checkoutCard,
+        deliveryStatus: 'sent'
+      });
+
       return {
         success: true,
         orderNumber: order.orderNumber,
         totalAmount: order.totalAmount,
         currency: order.currency,
         checkoutUrl: paymentInit.authorizationUrl,
-        expiresInMinutes: 15,
-        message: 'Order created and stock held for 15 minutes.'
+        checkoutCardSentAbove: true,
+        instruction: 'The complete order confirmation and secure Paystack payment link have ALREADY been delivered directly to the customer above! Do NOT re-paste the URL or generate links. Simply confirm you sent the checkout link above, remind them their kit is reserved for 15 minutes, and invite them to complete payment.'
       };
     } catch (error: any) {
       return {

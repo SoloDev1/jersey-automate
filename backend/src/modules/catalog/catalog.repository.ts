@@ -9,6 +9,60 @@ import {
   JerseySize
 } from './catalog.types.js';
 
+const CLUB_ALIASES: Record<string, string> = {
+  manu: 'Manchester United',
+  'man u': 'Manchester United',
+  'man utd': 'Manchester United',
+  united: 'Manchester United',
+  'red devils': 'Manchester United',
+  'man city': 'Manchester City',
+  mancity: 'Manchester City',
+  city: 'Manchester City',
+  citizens: 'Manchester City',
+  arsenal: 'Arsenal',
+  gunners: 'Arsenal',
+  chelsea: 'Chelsea',
+  blues: 'Chelsea',
+  liverpool: 'Liverpool',
+  reds: 'Liverpool',
+  spurs: 'Tottenham Hotspur',
+  tottenham: 'Tottenham Hotspur',
+  madrid: 'Real Madrid',
+  'real madrid': 'Real Madrid',
+  barca: 'Barcelona',
+  barcelona: 'Barcelona',
+  juve: 'Juventus',
+  juventus: 'Juventus',
+  milan: 'AC Milan',
+  'ac milan': 'AC Milan',
+  inter: 'Inter Milan',
+  'inter milan': 'Inter Milan',
+  bayern: 'Bayern Munich',
+  'bayern munich': 'Bayern Munich',
+  bvb: 'Borussia Dortmund',
+  dortmund: 'Borussia Dortmund',
+  psg: 'Paris Saint-Germain',
+  'paris saint-germain': 'Paris Saint-Germain',
+  wolves: 'Wolverhampton Wanderers',
+  newcastle: 'Newcastle United',
+  villa: 'Aston Villa',
+  'aston villa': 'Aston Villa'
+};
+
+export function normalizeTeamName(term?: string): string {
+  if (!term) return '';
+  const trimmed = term.trim();
+  const lower = trimmed.toLowerCase();
+  if (CLUB_ALIASES[lower]) return CLUB_ALIASES[lower];
+  for (const [alias, standardName] of Object.entries(CLUB_ALIASES)) {
+    const regex = new RegExp(`\\b${alias}\\b`, 'i');
+    if (regex.test(lower)) {
+      return standardName;
+    }
+  }
+  return trimmed;
+}
+
 export const catalogRepository = {
   /**
    * Retrieves a paginated list of jerseys with their size inventories.
@@ -30,19 +84,26 @@ export const catalogRepository = {
       query = query.ilike('league', `%${filter.league}%`);
     }
     if (filter.team) {
-      query = query.ilike('team', `%${filter.team}%`);
+      const normalized = normalizeTeamName(filter.team);
+      query = query.ilike('team', `%${normalized}%`);
     }
     if (filter.season) {
       query = query.eq('season', filter.season);
     }
     if (filter.kitType) {
-      query = query.ilike('kit_type', `%${filter.kitType}%`);
+      // Normalize 'home' -> 'Home', 'away' -> 'Away', etc.
+      const normalizedType = filter.kitType.charAt(0).toUpperCase() + filter.kitType.slice(1).toLowerCase();
+      query = query.ilike('kit_type', `%${normalizedType}%`);
     }
     if (filter.search) {
-      // Remove all characters except alphanumeric, whitespace, and hyphens to prevent PostgREST syntax injection
       const sanitized = filter.search.replace(/[^a-zA-Z0-9\s-]/g, ' ').replace(/\s+/g, ' ').trim();
       if (sanitized) {
-        query = query.or(`title.ilike.%${sanitized}%,team.ilike.%${sanitized}%,league.ilike.%${sanitized}%`);
+        const resolvedTeam = normalizeTeamName(sanitized);
+        if (resolvedTeam !== sanitized) {
+          query = query.or(`team.ilike.%${resolvedTeam}%,title.ilike.%${resolvedTeam}%,title.ilike.%${sanitized}%`);
+        } else {
+          query = query.or(`title.ilike.%${sanitized}%,team.ilike.%${sanitized}%,league.ilike.%${sanitized}%`);
+        }
       }
     }
 
