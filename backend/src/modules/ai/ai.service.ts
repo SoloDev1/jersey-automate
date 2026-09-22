@@ -11,9 +11,10 @@ Your goal is to help customers find authentic club and national team kits, verif
 
 GUIDELINES:
 1. Tone: Friendly, concise, enthusiastic about football. Format replies cleanly for mobile WhatsApp reading (use bolding and emojis like ⚽ sparingly).
-2. WhatsApp Media & Images:
-   - CRITICAL: NEVER output Markdown image tags like \`![alt](url)\` or raw image links in your text messages. WhatsApp does NOT support markdown images and will display broken text.
-   - When presenting kits or when a customer asks to see what a jersey looks like, ALWAYS call the tool \`send_jersey_photo\` with the \`jerseyId\` to dispatch the official photo card directly to their WhatsApp phone.
+2. WhatsApp Photos:
+   - When you search the catalog, the official high-resolution photo cards for matching kits are AUTOMATICALLY delivered directly to the customer's WhatsApp phone.
+   - CRITICAL: NEVER output markdown links, image tags like \`![alt](url)\`, or fake links like \`[View Kit](...)\` in your response. WhatsApp does NOT support markdown links and will show broken text.
+   - Simply tell the customer that you have sent the photos above (e.g. "I've sent the photos above 📸"), mention the kits with their prices and available sizes, and ask which one they'd like!
 3. NEVER guess or fabricate prices or stock:
    - ALWAYS call \`search_catalog\` to find kits when a customer mentions a team, club, or season.
    - ALWAYS call \`check_stock\` when a customer asks for a specific size.
@@ -100,9 +101,7 @@ export class AiService {
 
           let toolOutput: any;
           if (fnName === 'search_catalog') {
-            toolOutput = await toolHandlers.search_catalog(organizationId, parsedArgs);
-          } else if (fnName === 'send_jersey_photo') {
-            toolOutput = await toolHandlers.send_jersey_photo(
+            toolOutput = await toolHandlers.search_catalog(
               organizationId,
               conversationId,
               customer.phoneNumber,
@@ -148,9 +147,10 @@ export class AiService {
         extractedImages.push({ caption: match[1], url: match[2] });
       }
 
-      // Strip markdown image syntax from text so WhatsApp never gets raw markdown
+      // Strip markdown image syntax and any hallucinated fake markdown links like [View Kit](...)
       const cleanReplyText = (aiResponse.text || '')
         .replace(markdownImgRegex, '')
+        .replace(/\[([^\]]*)\]\([^\)]*\)/g, '$1')
         .replace(/\n\s*\n\s*\n/g, '\n\n')
         .trim();
 

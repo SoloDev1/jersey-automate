@@ -12,7 +12,7 @@ export const AI_TOOLS: ToolDefinition[] = [
     type: 'function',
     function: {
       name: 'search_catalog',
-      description: 'Search store catalog for football jerseys by team, club, country, league, kit type, or season.',
+      description: 'Search store catalog for football jerseys by team, club, country, league, kit type, or season. When matches are found, high-res photos are automatically delivered directly to the customer WhatsApp.',
       parameters: {
         type: 'object',
         properties: {
@@ -30,23 +30,6 @@ export const AI_TOOLS: ToolDefinition[] = [
           }
         },
         required: ['query']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'send_jersey_photo',
-      description: "Sends the real, official photo card of a jersey directly to the customer's WhatsApp phone as an image. Call this whenever recommending kits or when the customer asks to see what a jersey looks like.",
-      parameters: {
-        type: 'object',
-        properties: {
-          jerseyId: {
-            type: 'string',
-            description: 'The UUID of the jersey from search_catalog results'
-          }
-        },
-        required: ['jerseyId']
       }
     }
   },
@@ -109,17 +92,20 @@ export const AI_TOOLS: ToolDefinition[] = [
 
 export const toolHandlers = {
   /**
-   * Safe read-only catalog search tool handler.
+   * Catalog search tool handler.
+   * Automatically dispatches official photo cards directly to WhatsApp for top matching jerseys.
    */
   async search_catalog(
     organizationId: string,
+    conversationId: string,
+    customerPhone: string,
     args: { query: string; league?: string; kitType?: string }
   ): Promise<any> {
     const result = await catalogService.getCatalog(organizationId, {
       search: args.query,
       league: args.league,
       kitType: args.kitType,
-      limit: 5
+      limit: 4
     });
 
     if (result.data.length === 0) {
@@ -129,9 +115,53 @@ export const toolHandlers = {
       };
     }
 
+    // Retrieve store currency
+    const { data: settings } = await supabase
+      .from('settings')
+      .select('currency')
+      .eq('organization_id', organizationId)
+      .maybeSingle();
+
+    const currency = settings?.currency || 'NGN';
+
+    // Automatically send high-res photo cards directly to customer's WhatsApp for the top matches (up to 3)
+    const topMatches = result.data.slice(0, 3);
+    const sentPhotos: string[] = [];
+
+    for (const jersey of topMatches) {
+      if (jersey.imageUrl && customerPhone) {
+        try {
+          const metaMessageId = await whatsappService.sendKitCard(organizationId, {
+            toPhone: customerPhone,
+            jerseyTitle: jersey.title,
+            imageUrl: jersey.imageUrl,
+            price: jersey.basePrice,
+            currency,
+            description: jersey.description
+          });
+
+          await chatRepository.insertMessage(organizationId, {
+            conversationId,
+            metaMessageId,
+            direction: 'outbound',
+            type: 'interactive_kit',
+            body: `⚽ ${jersey.title} - ${currency} ${jersey.basePrice}`,
+            mediaUrl: jersey.imageUrl,
+            jerseyId: jersey.id,
+            deliveryStatus: 'sent'
+          });
+
+          sentPhotos.push(jersey.title);
+        } catch (photoErr: any) {
+          console.warn(`[search_catalog] Could not send photo card for ${jersey.title}:`, photoErr?.message);
+        }
+      }
+    }
+
     return {
       found: true,
       count: result.data.length,
+      photosSentAbove: sentPhotos,
       jerseys: result.data.map((j) => ({
         id: j.id,
         title: j.title,
@@ -140,65 +170,12 @@ export const toolHandlers = {
         season: j.season,
         kitType: j.kitType,
         price: j.basePrice,
-        hasPhoto: Boolean(j.imageUrl),
         availableSizes: j.inventory
           ?.filter((inv) => inv.quantityAvailable > 0)
           .map((inv) => inv.size)
-      }))
+      })),
+      instruction: 'The official photo cards for these kits have ALREADY been delivered directly to the customer as real WhatsApp photo cards above! Do NOT output any links, URLs, or markdown links. Simply inform the customer you sent the photos above, mention the kits, prices, and available sizes, and ask which one they prefer.'
     };
-  },
-
-  /**
-   * Dispatches the official kit photo directly to customer's WhatsApp as an image card.
-   */
-  async send_jersey_photo(
-    organizationId: string,
-    conversationId: string,
-    customerPhone: string,
-    args: { jerseyId: string }
-  ): Promise<any> {
-    try {
-      const jersey = await catalogService.getJersey(organizationId, args.jerseyId);
-      if (!jersey) return { error: 'Jersey not found' };
-
-      const { data: settings } = await supabase
-        .from('settings')
-        .select('currency')
-        .eq('organization_id', organizationId)
-        .maybeSingle();
-
-      const currency = settings?.currency || 'NGN';
-
-      // Send actual photo card via WhatsApp Cloud API
-      const metaMessageId = await whatsappService.sendKitCard(organizationId, {
-        toPhone: customerPhone,
-        jerseyTitle: jersey.title,
-        imageUrl: jersey.imageUrl,
-        price: jersey.basePrice,
-        currency,
-        description: jersey.description
-      });
-
-      // Record outbound kit card message in CRM
-      await chatRepository.insertMessage(organizationId, {
-        conversationId,
-        metaMessageId,
-        direction: 'outbound',
-        type: 'interactive_kit',
-        body: `⚽ ${jersey.title} - ${currency} ${jersey.basePrice}`,
-        mediaUrl: jersey.imageUrl,
-        jerseyId: jersey.id,
-        deliveryStatus: 'sent'
-      });
-
-      return {
-        success: true,
-        sentJersey: jersey.title,
-        message: `Photo card for "${jersey.title}" has been sent directly to the customer's WhatsApp.`
-      };
-    } catch (error: any) {
-      return { error: error.message || 'Failed to send jersey photo' };
-    }
   },
 
   /**
