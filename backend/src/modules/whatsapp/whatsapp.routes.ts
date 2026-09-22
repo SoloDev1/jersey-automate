@@ -8,3 +8,4 @@ export const whatsappRouter = Router();
 whatsappRouter.get('/status', whatsappController.getStatus);
 whatsappRouter.post('/onboard', validateRequest({ body: onboardSchema }), whatsappController.onboard);
 whatsappRouter.post('/disconnect', whatsappController.disconnect);
+whatsappRouter.post('/test-message', whatsappController.testMessage);

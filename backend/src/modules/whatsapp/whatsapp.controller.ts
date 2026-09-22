@@ -42,5 +42,30 @@ export const whatsappController = {
     } catch (error) {
       next(error);
     }
+  },
+
+  /**
+   * POST /api/v1/whatsapp/test-message
+   */
+  async testMessage(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { toPhone, message } = req.body;
+      if (!toPhone) {
+        res.status(400).json({ success: false, error: 'toPhone is required' });
+        return;
+      }
+      const text = message || '⚽ Hello from Jersey Automate Backend! Your WhatsApp Cloud API connection is working.';
+      const wamid = await whatsappService.sendTextMessage(req.organizationId, {
+        toPhone,
+        body: text
+      });
+      res.json({
+        success: true,
+        message: 'Test message sent successfully',
+        data: { wamid }
+      });
+    } catch (error) {
+      next(error);
+    }
   }
 };

@@ -40,25 +40,51 @@ export const whatsappService = {
     wabaId: string;
     isConnected: boolean;
   }> {
-    const { data, error } = await supabase
-      .from('settings')
-      .select('access_token_encrypted, phone_number_id, waba_id, is_whatsapp_connected')
-      .eq('organization_id', organizationId)
-      .maybeSingle();
+    // 1. Try fetching dynamically from database settings
+    try {
+      const { data, error } = await supabase
+        .from('settings')
+        .select('access_token_encrypted, phone_number_id, waba_id, is_whatsapp_connected')
+        .eq('organization_id', organizationId)
+        .maybeSingle();
 
-    if (error || !data) {
-      throw new Error(`Settings not found for organization ${organizationId}`);
+      if (!error && data && data.is_whatsapp_connected && data.phone_number_id) {
+        const decrypted = data.access_token_encrypted
+          ? decryptToken(data.access_token_encrypted)
+          : (env.WHATSAPP_ACCESS_TOKEN || env.META_SYSTEM_USER_TOKEN);
+
+        if (decrypted) {
+          return {
+            accessToken: decrypted,
+            phoneNumberId: data.phone_number_id,
+            wabaId: data.waba_id || env.WHATSAPP_BUSINESS_ACCOUNT_ID || env.DEFAULT_WABA_ID,
+            isConnected: true
+          };
+        }
+      }
+    } catch {
+      // Fallback to .env below if database is unreachable or table not yet initialized
     }
 
-    const decrypted = data.access_token_encrypted
-      ? decryptToken(data.access_token_encrypted)
-      : env.META_SYSTEM_USER_TOKEN;
+    // 2. Fallback to environment variables (Standalone / Direct .env configuration)
+    const envToken = env.WHATSAPP_ACCESS_TOKEN || env.META_SYSTEM_USER_TOKEN;
+    const envPhoneId = env.WHATSAPP_PHONE_NUMBER_ID;
+    const envWabaId = env.WHATSAPP_BUSINESS_ACCOUNT_ID || env.DEFAULT_WABA_ID;
+
+    if (envToken && envPhoneId) {
+      return {
+        accessToken: envToken,
+        phoneNumberId: envPhoneId,
+        wabaId: envWabaId,
+        isConnected: true
+      };
+    }
 
     return {
-      accessToken: decrypted,
-      phoneNumberId: data.phone_number_id || '',
-      wabaId: data.waba_id || env.DEFAULT_WABA_ID,
-      isConnected: Boolean(data.is_whatsapp_connected && decrypted)
+      accessToken: envToken || '',
+      phoneNumberId: envPhoneId || '',
+      wabaId: envWabaId || '',
+      isConnected: false
     };
   },
 
@@ -197,18 +223,33 @@ export const whatsappService = {
    * Retrieves current connection status for an organization.
    */
   async getStatus(organizationId: string): Promise<WhatsAppStatusResponse> {
-    const { data } = await supabase
-      .from('settings')
-      .select('waba_id, phone_number_id, display_phone_number, is_whatsapp_connected, updated_at')
-      .eq('organization_id', organizationId)
-      .maybeSingle();
+    try {
+      const { data } = await supabase
+        .from('settings')
+        .select('waba_id, phone_number_id, display_phone_number, is_whatsapp_connected, updated_at')
+        .eq('organization_id', organizationId)
+        .maybeSingle();
 
+      if (data?.is_whatsapp_connected) {
+        return {
+          isConnected: true,
+          wabaId: data.waba_id || null,
+          phoneNumberId: data.phone_number_id || null,
+          displayPhoneNumber: data.display_phone_number || null,
+          updatedAt: data.updated_at || null
+        };
+      }
+    } catch {
+      // Fallback to .env below
+    }
+
+    const creds = await this.getTenantCredentials(organizationId);
     return {
-      isConnected: Boolean(data?.is_whatsapp_connected),
-      wabaId: data?.waba_id || null,
-      phoneNumberId: data?.phone_number_id || null,
-      displayPhoneNumber: data?.display_phone_number || null,
-      updatedAt: data?.updated_at || null
+      isConnected: creds.isConnected,
+      wabaId: creds.wabaId || null,
+      phoneNumberId: creds.phoneNumberId || null,
+      displayPhoneNumber: null,
+      updatedAt: creds.isConnected ? new Date().toISOString() : null
     };
   },
 

@@ -31,6 +31,9 @@ const envSchema = z.object({
   META_CONFIG_ID: z.string().default(''),
   GRAPH_API_VERSION: z.string().default('v21.0'),
   WHATSAPP_WEBHOOK_VERIFY_TOKEN: z.string().default('jersey_automate_verify_token'),
+  WHATSAPP_ACCESS_TOKEN: z.string().default('').or(z.undefined()).transform(val => val || process.env.AccessToken || process.env.META_SYSTEM_USER_TOKEN || ''),
+  WHATSAPP_PHONE_NUMBER_ID: z.string().default(''),
+  WHATSAPP_BUSINESS_ACCOUNT_ID: z.string().default('').or(z.undefined()).transform(val => val || process.env.DEFAULT_WABA_ID || ''),
   META_SYSTEM_USER_TOKEN: z.string().default(''),
   DEFAULT_WABA_ID: z.string().default(''),
 
