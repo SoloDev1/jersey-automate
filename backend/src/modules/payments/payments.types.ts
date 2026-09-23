@@ -32,6 +32,7 @@ export interface PaystackVerifyResponse {
       customer_code: string;
       phone?: string;
     };
+    metadata?: Record<string, any>;
   };
 }
 

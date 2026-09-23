@@ -240,13 +240,22 @@ export const ordersRepository = {
 
   /**
    * Fetches an order by its Paystack reference.
+   * Scoped to tenant organizationId when available.
    */
-  async getOrderByPaystackRef(paystackReference: string): Promise<OrderRecord | null> {
-    const { data, error } = await supabase
+  async getOrderByPaystackRef(
+    paystackReference: string,
+    organizationId?: string
+  ): Promise<OrderRecord | null> {
+    let query = supabase
       .from('orders')
       .select('*, customers(phone_number, display_name), order_items(*, jerseys(title, image_url))')
-      .eq('paystack_reference', paystackReference)
-      .maybeSingle();
+      .eq('paystack_reference', paystackReference);
+
+    if (organizationId) {
+      query = query.eq('organization_id', organizationId);
+    }
+
+    const { data, error } = await query.maybeSingle();
 
     if (error || !data) return null;
     return this.getOrderById(data.organization_id, data.id);
@@ -254,8 +263,10 @@ export const ordersRepository = {
 
   /**
    * Updates an order's Paystack payment initiation details.
+   * Strictly tenant-scoped to organizationId.
    */
   async attachPaystackDetails(
+    organizationId: string,
     orderId: string,
     paystackReference: string,
     accessCode: string,
@@ -269,6 +280,7 @@ export const ordersRepository = {
         payment_url: paymentUrl,
         updated_at: new Date().toISOString()
       })
+      .eq('organization_id', organizationId)
       .eq('id', orderId);
 
     if (error) throw error;
@@ -276,8 +288,9 @@ export const ordersRepository = {
 
   /**
    * Marks an order as paid upon verified transaction confirmation.
+   * Strictly tenant-scoped to organizationId.
    */
-  async markOrderPaid(orderId: string): Promise<void> {
+  async markOrderPaid(organizationId: string, orderId: string): Promise<void> {
     const { error } = await supabase
       .from('orders')
       .update({
@@ -285,6 +298,7 @@ export const ordersRepository = {
         fulfillment_status: 'printing',
         updated_at: new Date().toISOString()
       })
+      .eq('organization_id', organizationId)
       .eq('id', orderId);
 
     if (error) throw error;
@@ -393,5 +407,118 @@ export const ordersRepository = {
         totalPages: Math.ceil(total / limit) || 1
       }
     };
+  },
+
+  /**
+   * Immediately releases any active stock reservation holds and cancels the order.
+   * Invoked if payment gateway initialization fails or customer cancels checkout.
+   */
+  async cancelOrderAndReleaseStock(organizationId: string, orderId: string): Promise<void> {
+    // 1. Attempt atomic stored procedure in PostgreSQL
+    const { error: rpcErr } = await supabase.rpc('cancel_order_and_release_stock', {
+      p_organization_id: organizationId,
+      p_order_id: orderId
+    });
+
+    if (!rpcErr) return;
+
+    // Fallback: Programmatic release if RPC is not yet loaded in DB
+    const { data: reservations } = await supabase
+      .from('stock_reservations')
+      .select('id, jersey_id, size, quantity')
+      .eq('organization_id', organizationId)
+      .eq('order_id', orderId)
+      .eq('status', 'active');
+
+    if (reservations && reservations.length > 0) {
+      for (const res of reservations) {
+        const { data: inv } = await supabase
+          .from('jersey_inventory')
+          .select('quantity_reserved')
+          .eq('organization_id', organizationId)
+          .eq('jersey_id', res.jersey_id)
+          .eq('size', res.size)
+          .maybeSingle();
+
+        if (inv) {
+          const newReserved = Math.max(0, (inv.quantity_reserved || 0) - res.quantity);
+          await supabase
+            .from('jersey_inventory')
+            .update({ quantity_reserved: newReserved, updated_at: new Date().toISOString() })
+            .eq('organization_id', organizationId)
+            .eq('jersey_id', res.jersey_id)
+            .eq('size', res.size);
+        }
+
+        await supabase
+          .from('stock_reservations')
+          .update({
+            status: 'released',
+            released_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', res.id);
+      }
+    }
+
+    await supabase
+      .from('orders')
+      .update({
+        fulfillment_status: 'cancelled',
+        updated_at: new Date().toISOString()
+      })
+      .eq('organization_id', organizationId)
+      .eq('id', orderId);
+  },
+
+  /**
+   * Fetches the latest order for a given customer phone number.
+   */
+  async getLatestOrderByCustomerPhone(
+    organizationId: string,
+    phone: string
+  ): Promise<OrderRecord | null> {
+    const normalizedPhone = formatPhoneNumber(phone);
+    const { data: customer } = await supabase
+      .from('customers')
+      .select('id')
+      .eq('organization_id', organizationId)
+      .eq('phone_number', normalizedPhone)
+      .maybeSingle();
+
+    if (!customer) return null;
+
+    const { data: order } = await supabase
+      .from('orders')
+      .select('id')
+      .eq('organization_id', organizationId)
+      .eq('customer_id', customer.id)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (!order) return null;
+    return this.getOrderById(organizationId, order.id);
+  },
+
+  /**
+   * Fetches an order by its human-readable order_number.
+   */
+  async getOrderByNumber(
+    organizationId: string,
+    orderNumber: number | string
+  ): Promise<OrderRecord | null> {
+    const num = Number(orderNumber);
+    if (isNaN(num)) return null;
+
+    const { data: order } = await supabase
+      .from('orders')
+      .select('id')
+      .eq('organization_id', organizationId)
+      .eq('order_number', num)
+      .maybeSingle();
+
+    if (!order) return null;
+    return this.getOrderById(organizationId, order.id);
   }
 };

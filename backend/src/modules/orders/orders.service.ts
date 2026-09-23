@@ -41,5 +41,32 @@ export const ordersService = {
     dto: UpdateOrderStatusDTO
   ): Promise<OrderRecord | null> {
     return ordersRepository.updateStatus(organizationId, id, dto);
+  },
+
+  /**
+   * Cancels order and immediately releases reserved stock.
+   */
+  async cancelOrderAndReleaseStock(organizationId: string, orderId: string): Promise<void> {
+    return ordersRepository.cancelOrderAndReleaseStock(organizationId, orderId);
+  },
+
+  /**
+   * Retrieves the most recent order for a customer by phone.
+   */
+  async getLatestOrderByCustomerPhone(
+    organizationId: string,
+    phone: string
+  ): Promise<OrderRecord | null> {
+    return ordersRepository.getLatestOrderByCustomerPhone(organizationId, phone);
+  },
+
+  /**
+   * Retrieves an order by its numerical order number.
+   */
+  async getOrderByNumber(
+    organizationId: string,
+    orderNumber: number | string
+  ): Promise<OrderRecord | null> {
+    return ordersRepository.getOrderByNumber(organizationId, orderNumber);
   }
 };

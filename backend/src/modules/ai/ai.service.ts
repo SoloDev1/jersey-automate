@@ -10,7 +10,9 @@ const SYSTEM_PROMPT = `You are the friendly, expert AI Sales Assistant for Jerse
 Your goal is to help customers find authentic club and national team kits, verify size availability, and complete their purchases seamlessly.
 
 CORE PRINCIPLES & INTENT RECOGNITION:
-1. Tone: Friendly, concise, enthusiastic about football. Format replies cleanly for mobile WhatsApp reading (use bolding and emojis like ⚽ sparingly).
+1. Tone & Style:
+   - Friendly, concise, enthusiastic about football.
+   - Format replies cleanly for mobile WhatsApp reading (use bolding and emojis like ⚽ sparingly).
 2. Context & Follow-Up Intent Retention:
    - When a customer asks a follow-up (e.g. "send me the home kit", "what about the away", "let me see home kit", "do you have third?"), ALWAYS retain the active team from previous messages in the conversation.
    - When the customer asks for a specific kit type (Home, Away, Third, Goalkeeper), pass \`kitType\` explicitly to \`search_catalog\` (e.g. team: "Manchester United", kitType: "Home").
@@ -19,12 +21,15 @@ CORE PRINCIPLES & INTENT RECOGNITION:
    - If the customer asked for a specific kit (e.g. "home kit"), only that specific kit photo is delivered.
    - CRITICAL: NEVER output markdown links, image tags like ![alt](url), or fake links like [View Kit](...). Simply tell the customer that you have sent the photo above 📸.
 4. Truthful & Real Data Only (Zero Fabrication):
-   - NEVER fabricate prices, stock, or reasons.
+   - NEVER fabricate prices, stock, order numbers, or payment links.
+   - NEVER guess or invent jersey UUIDs. Always use the real ID returned from \`search_catalog\`.
    - Only state an item is "out of stock" if verified via \`check_stock\` that \`availableSizes\` has 0 quantity.
    - If a kit type does not exist in the catalog, truthfully explain that we do not carry that version and offer the kits that are in stock.
 5. Closing Sales:
    - When a customer is ready to buy and has picked their size, use \`create_checkout\` to generate a secure Paystack payment link and hold their jersey for 15 minutes.
-   - Inform the customer that their kit is reserved for 15 minutes while they complete checkout.`;
+   - Inform the customer that their kit is reserved for 15 minutes while they complete checkout.
+6. Order & Payment Inquiries:
+   - When a customer asks about their order status, payment confirmation, or shipping tracking, use \`check_order_status\` to look up their order.`;
 
 export class AiService {
   private provider: AiProvider;
@@ -51,7 +56,11 @@ export class AiService {
 
       // 2. Pre-flight Budget & Global AI Switch Check (Prevents OpenAI API costs if locked/capped)
       const budgetStatus = await this.getBudgetStatus(organizationId);
-      if (!budgetStatus.isGloballyEnabled || budgetStatus.isLocked || budgetStatus.currentSpendUsd >= budgetStatus.maxBudgetUsd) {
+      if (
+        !budgetStatus.isGloballyEnabled ||
+        budgetStatus.isLocked ||
+        budgetStatus.currentSpendUsd >= budgetStatus.maxBudgetUsd
+      ) {
         console.warn(
           `[AI Safety] Organization ${organizationId} AI budget capped or globally disabled ($${budgetStatus.currentSpendUsd}/$${budgetStatus.maxBudgetUsd}). Skipping LLM call.`
         );
@@ -60,10 +69,8 @@ export class AiService {
 
       // 3. Fetch recent message history (last 12 messages for rich context)
       const recentMessages = await chatRepository.getMessages(organizationId, conversationId, 12);
-      
-      const messages: ChatMessage[] = [
-        { role: 'system', content: SYSTEM_PROMPT }
-      ];
+
+      const messages: ChatMessage[] = [{ role: 'system', content: SYSTEM_PROMPT }];
 
       for (const m of recentMessages) {
         if (m.type === 'text' && m.body) {
@@ -90,11 +97,11 @@ export class AiService {
         messages.push({ role: 'user', content: userMessage });
       }
 
-      // 3. First LLM Turn (Model decides whether to invoke tools)
+      // 4. First LLM Turn (Model decides whether to invoke tools)
       let aiResponse = await this.provider.generateResponse(messages, AI_TOOLS);
       const toolsCalledNames: string[] = [];
 
-      // 4. Handle Tool Calls if requested by LLM
+      // 5. Handle Tool Calls if requested by LLM
       if (aiResponse.toolCalls && aiResponse.toolCalls.length > 0) {
         // Append assistant's tool-call message
         messages.push({
@@ -130,6 +137,12 @@ export class AiService {
               customer.phoneNumber,
               parsedArgs
             );
+          } else if (fnName === 'check_order_status') {
+            toolOutput = await toolHandlers.check_order_status(
+              organizationId,
+              customer.phoneNumber,
+              parsedArgs
+            );
           } else {
             toolOutput = { error: `Unknown tool: ${fnName}` };
           }
@@ -148,56 +161,24 @@ export class AiService {
           text: finalResponse.text,
           usage: {
             promptTokens: aiResponse.usage.promptTokens + finalResponse.usage.promptTokens,
-            completionTokens: aiResponse.usage.completionTokens + finalResponse.usage.completionTokens,
+            completionTokens:
+              aiResponse.usage.completionTokens + finalResponse.usage.completionTokens,
             totalTokens: aiResponse.usage.totalTokens + finalResponse.usage.totalTokens
           }
         };
       }
 
-      // 5. Intercept and extract any markdown image tags ![alt](url) to dispatch as real WhatsApp photos
-      const markdownImgRegex = /!\[([^\]]*)\]\((https?:\/\/[^\s\)]+)\)/g;
-      const extractedImages: Array<{ caption: string; url: string }> = [];
-      let match: RegExpExecArray | null;
-      while ((match = markdownImgRegex.exec(aiResponse.text || '')) !== null) {
-        extractedImages.push({ caption: match[1], url: match[2] });
-      }
-
-      // Strip markdown image syntax and any hallucinated fake markdown links like [View Kit](...)
+      // 6. Clean and sanitize reply text: strip any hallucinated markdown links or bracket syntax
       const cleanReplyText = (aiResponse.text || '')
-        .replace(markdownImgRegex, '')
+        .replace(/!\[([^\]]*)\]\([^\)]*\)/g, '')
         .replace(/\[([^\]]*)\]\([^\)]*\)/g, '$1')
         .replace(/(?:^|\n)\s*[-*•]?\s*(?:View|See)\s+.*?Kit\s*(?:\n|$)/gi, '\n')
         .replace(/\n\s*\n\s*\n/g, '\n\n')
         .trim();
 
-      // If markdown image tags were detected in the text, dispatch them as real WhatsApp image cards
-      for (const img of extractedImages) {
-        try {
-          const photoMetaId = await whatsappService.sendKitCard(organizationId, {
-            toPhone: customer.phoneNumber,
-            jerseyTitle: img.caption || 'Jersey Kit',
-            imageUrl: img.url,
-            price: 0,
-            currency: 'NGN'
-          });
-
-          await chatRepository.insertMessage(organizationId, {
-            conversationId,
-            metaMessageId: photoMetaId,
-            direction: 'outbound',
-            type: 'interactive_kit',
-            body: img.caption || 'Official Kit Photo',
-            mediaUrl: img.url,
-            deliveryStatus: 'sent'
-          });
-        } catch (imgErr: any) {
-          console.warn('[AI Media Interceptor] Failed to dispatch extracted image:', imgErr?.message);
-        }
-      }
-
       if (!cleanReplyText) return;
 
-      // 6. Atomic Concurrency-Safe Budget Enforcement
+      // 7. Atomic Concurrency-Safe Budget Enforcement (Fail-closed)
       const costUsd = this.provider.estimateCostUsd(
         aiResponse.usage.promptTokens,
         aiResponse.usage.completionTokens
@@ -217,7 +198,11 @@ export class AiService {
       );
 
       if (budgetError) {
-        console.error('[AI Budget Error] RPC check_and_record_ai_usage failed:', budgetError.message);
+        console.error(
+          '[AI Budget Error] RPC check_and_record_ai_usage failed (failing closed):',
+          budgetError.message
+        );
+        return; // Fail closed: do not send outbound message if budget tracking fails
       }
 
       if (isAllowed === false) {
@@ -227,13 +212,13 @@ export class AiService {
         return;
       }
 
-      // 7. Dispatch outbound text response to customer WhatsApp
+      // 8. Dispatch outbound text response to customer WhatsApp
       const metaMessageId = await whatsappService.sendTextMessage(organizationId, {
         toPhone: customer.phoneNumber,
         body: cleanReplyText
       });
 
-      // 8. Persist AI outbound message to CRM database
+      // 9. Persist AI outbound message to CRM database
       await chatRepository.insertMessage(organizationId, {
         conversationId,
         metaMessageId,
@@ -249,12 +234,16 @@ export class AiService {
 
   /**
    * Retrieves current AI budget and spending metrics for an organization.
+   * Uses Africa/Lagos timezone to compute monthly boundaries accurately.
    */
   async getBudgetStatus(organizationId: string): Promise<any> {
-    const monthDate = new Date();
-    const firstDayOfMonth = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1)
-      .toISOString()
-      .split('T')[0];
+    const lagosDateStr = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Africa/Lagos',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).format(new Date());
+    const firstDayOfMonth = `${lagosDateStr.slice(0, 7)}-01`;
 
     const { data: budget } = await supabase
       .from('ai_monthly_budgets')

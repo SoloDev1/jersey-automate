@@ -7,6 +7,67 @@ import { supabase } from '../../core/database/supabase.js';
 import { whatsappService } from '../whatsapp/whatsapp.service.js';
 import { chatRepository } from '../chat/chat.repository.js';
 
+export interface SearchCatalogResult {
+  found: boolean;
+  reason?: 'SPECIFIC_KIT_TYPE_UNAVAILABLE' | 'NOT_FOUND';
+  requestedKitType?: string;
+  availableKitTypes?: string[];
+  team?: string;
+  count?: number;
+  photosSentAbove?: string[];
+  jerseys?: Array<{
+    id: string;
+    title: string;
+    team: string;
+    league: string;
+    season: string;
+    kitType: string;
+    price: number;
+    availableSizes?: JerseySize[];
+  }>;
+  instruction: string;
+  message?: string;
+}
+
+export interface CheckStockResult {
+  jerseyTitle?: string;
+  price?: number;
+  inStockSizes?: string[];
+  allSizes?: Array<{
+    size: JerseySize;
+    available: number;
+  }>;
+  error?: string;
+}
+
+export interface CreateCheckoutResult {
+  success: boolean;
+  orderNumber?: number;
+  totalAmount?: number;
+  currency?: string;
+  checkoutUrl?: string;
+  checkoutCardSentAbove?: boolean;
+  instruction?: string;
+  error?: string;
+}
+
+export interface CheckOrderStatusResult {
+  found: boolean;
+  orderNumber?: number;
+  paymentStatus?: string;
+  fulfillmentStatus?: string;
+  shippingTrackingNumber?: string | null;
+  items?: Array<{
+    title?: string;
+    size: string;
+    quantity: number;
+  }>;
+  totalAmount?: number;
+  currency?: string;
+  createdAt?: string;
+  instruction: string;
+}
+
 export const AI_TOOLS: ToolDefinition[] = [
   {
     type: 'function',
@@ -77,7 +138,7 @@ export const AI_TOOLS: ToolDefinition[] = [
           },
           quantity: {
             type: 'integer',
-            description: 'Quantity to order (default 1)'
+            description: 'Quantity to order (default 1, max 10)'
           },
           customName: {
             type: 'string',
@@ -95,6 +156,22 @@ export const AI_TOOLS: ToolDefinition[] = [
         required: ['jerseyId', 'size']
       }
     }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'check_order_status',
+      description: 'Check the real-time payment and fulfillment/shipping status of an existing customer order.',
+      parameters: {
+        type: 'object',
+        properties: {
+          orderNumber: {
+            type: 'integer',
+            description: 'Optional numerical order number (e.g. 1002). If omitted, retrieves the customer\'s latest order.'
+          }
+        }
+      }
+    }
   }
 ];
 
@@ -108,16 +185,16 @@ export const toolHandlers = {
     conversationId: string,
     customerPhone: string,
     args: { team?: string; kitType?: string; league?: string; season?: string; query?: string }
-  ): Promise<any> {
-    const effectiveTeam = args.team || args.query;
+  ): Promise<SearchCatalogResult> {
+    const effectiveTeam = args.team;
     const effectiveKitType = args.kitType;
 
     const result = await catalogService.getCatalog(organizationId, {
-      team: args.team,
+      team: effectiveTeam,
       kitType: effectiveKitType,
       league: args.league,
       season: args.season,
-      search: args.query,
+      search: effectiveTeam ? undefined : args.query,
       limit: effectiveKitType ? 2 : 4
     });
 
@@ -145,7 +222,8 @@ export const toolHandlers = {
       return {
         found: false,
         reason: 'NOT_FOUND',
-        message: `No jerseys found matching the request. Truthfully tell the customer we do not have this in stock and ask if they would like another team.`
+        instruction: `No jerseys found matching the request. Truthfully tell the customer we do not have this in stock and ask if they would like another team.`,
+        message: `No jerseys found matching the request.`
       };
     }
 
@@ -218,9 +296,13 @@ export const toolHandlers = {
    */
   async check_stock(
     organizationId: string,
-    args: { jerseyId: string }
-  ): Promise<any> {
+    args: { jerseyId?: string }
+  ): Promise<CheckStockResult> {
     try {
+      if (!args.jerseyId || typeof args.jerseyId !== 'string') {
+        return { error: 'A valid jerseyId UUID is required to check stock.' };
+      }
+
       const jersey = await catalogService.getJersey(organizationId, args.jerseyId);
       if (!jersey) {
         return { error: 'Jersey not found' };
@@ -248,6 +330,7 @@ export const toolHandlers = {
   /**
    * Mutating checkout tool handler.
    * Atomic 15-minute stock hold + Paystack checkout link creation + clean WhatsApp payment card delivery.
+   * Auto-rolls back stock hold if payment gateway initialization fails.
    */
   async create_checkout(
     organizationId: string,
@@ -261,12 +344,31 @@ export const toolHandlers = {
       customNumber?: string;
       shippingAddress?: string;
     }
-  ): Promise<any> {
-    try {
-      const quantity = args.quantity && args.quantity > 0 ? args.quantity : 1;
+  ): Promise<CreateCheckoutResult> {
+    const validSizes: JerseySize[] = ['XS', 'S', 'M', 'L', 'XL', 'XXL', '3XL'];
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+    if (!args.jerseyId || !uuidRegex.test(args.jerseyId)) {
+      return {
+        success: false,
+        error: 'Invalid or missing jerseyId. Please provide a valid jersey UUID.'
+      };
+    }
+
+    if (!args.size || !validSizes.includes(args.size)) {
+      return {
+        success: false,
+        error: `Invalid size "${args.size}". Valid jersey sizes are: ${validSizes.join(', ')}.`
+      };
+    }
+
+    const rawQty = Number(args.quantity);
+    const quantity = (!isNaN(rawQty) && rawQty >= 1 && rawQty <= 10) ? Math.floor(rawQty) : 1;
+
+    let order;
+    try {
       // 1. Create order (Server pricing authority + atomic 15-min reservation)
-      const order = await ordersService.createOrder(organizationId, {
+      order = await ordersService.createOrder(organizationId, {
         customerPhone,
         shippingAddress: args.shippingAddress,
         items: [
@@ -274,19 +376,39 @@ export const toolHandlers = {
             jerseyId: args.jerseyId,
             size: args.size,
             quantity,
-            customName: args.customName,
-            customNumber: args.customNumber
+            customName: args.customName?.trim() || undefined,
+            customNumber: args.customNumber?.trim() || undefined
           }
         ]
       });
+    } catch (orderError: any) {
+      return {
+        success: false,
+        error: orderError.message || 'Failed to create order. The requested size may be out of stock.'
+      };
+    }
 
-      // 2. Initialize Paystack payment
-      const paymentInit = await paymentsService.initializePayment(
+    // 2. Initialize Paystack payment (wrapped in try-catch to cancel order and release stock immediately on failure)
+    let paymentInit: { authorizationUrl: string; accessCode: string; reference: string };
+    try {
+      paymentInit = await paymentsService.initializePayment(
         organizationId,
         order.id,
         `${customerPhone.replace(/\+/g, '')}@whatsapp.customer`
       );
+    } catch (paystackError: any) {
+      console.error(
+        `[create_checkout] Paystack initialization failed for order ${order.id}. Releasing reserved stock:`,
+        paystackError?.message
+      );
+      await ordersService.cancelOrderAndReleaseStock(organizationId, order.id);
+      return {
+        success: false,
+        error: `Payment initialization temporarily unavailable: ${paystackError?.message || 'Please try again in a moment.'}`
+      };
+    }
 
+    try {
       // 3. Fetch jersey details for invoice summary
       const jersey = await catalogService.getJersey(organizationId, args.jerseyId);
 
@@ -347,10 +469,63 @@ export const toolHandlers = {
         checkoutCardSentAbove: true,
         instruction: 'The complete order confirmation and secure Paystack payment link have ALREADY been delivered directly to the customer above! Do NOT re-paste the URL or generate links. Simply confirm you sent the checkout link above, remind them their kit is reserved for 15 minutes, and invite them to complete payment.'
       };
-    } catch (error: any) {
+    } catch (postOrderError: any) {
+      console.warn(`[create_checkout] Non-fatal notification error:`, postOrderError?.message);
       return {
-        success: false,
-        error: error.message || 'Failed to create checkout link. The requested size may be out of stock.'
+        success: true,
+        orderNumber: order.orderNumber,
+        totalAmount: order.totalAmount,
+        currency: order.currency,
+        checkoutUrl: paymentInit.authorizationUrl,
+        instruction: `Order #${order.orderNumber} created. Paystack link: ${paymentInit.authorizationUrl}`
+      };
+    }
+  },
+
+  /**
+   * Authoritative order status verification handler.
+   */
+  async check_order_status(
+    organizationId: string,
+    customerPhone: string,
+    args: { orderNumber?: number }
+  ): Promise<CheckOrderStatusResult> {
+    try {
+      let order = null;
+      if (args.orderNumber) {
+        order = await ordersService.getOrderByNumber(organizationId, args.orderNumber);
+      }
+      if (!order && customerPhone) {
+        order = await ordersService.getLatestOrderByCustomerPhone(organizationId, customerPhone);
+      }
+
+      if (!order) {
+        return {
+          found: false,
+          instruction: 'No order was found matching that order number or phone. Truthfully ask the customer for their order number.'
+        };
+      }
+
+      return {
+        found: true,
+        orderNumber: order.orderNumber,
+        paymentStatus: order.paymentStatus,
+        fulfillmentStatus: order.fulfillmentStatus,
+        shippingTrackingNumber: order.shippingTrackingNumber,
+        items: (order.items || []).map((i) => ({
+          title: i.jerseyTitle,
+          size: i.size,
+          quantity: i.quantity
+        })),
+        totalAmount: order.totalAmount,
+        currency: order.currency,
+        createdAt: order.createdAt,
+        instruction: `Order #${order.orderNumber} status: Payment is "${order.paymentStatus}", Fulfillment is "${order.fulfillmentStatus}".${order.shippingTrackingNumber ? ` Tracking number: ${order.shippingTrackingNumber}.` : ''} Truthfully summarize this to the customer.`
+      };
+    } catch (err: any) {
+      return {
+        found: false,
+        instruction: `Could not retrieve order details: ${err?.message || 'Database error'}. Ask customer to verify their order number.`
       };
     }
   }

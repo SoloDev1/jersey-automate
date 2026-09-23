@@ -70,6 +70,7 @@ export const paymentsService = {
 
     // Attach Paystack reference to order
     await ordersRepository.attachPaystackDetails(
+      organizationId,
       order.id,
       reference,
       access_code,
@@ -149,8 +150,9 @@ export const paymentsService = {
       throw new Error(`Transaction ${reference} is not successful (status: ${data.status})`);
     }
 
-    // 2. Locate order by Paystack reference
-    const order = await ordersRepository.getOrderByPaystackRef(reference);
+    // 2. Locate order by Paystack reference (scoped by organization_id metadata when present)
+    const orgId = (data.metadata as any)?.organization_id;
+    const order = await ordersRepository.getOrderByPaystackRef(reference, orgId);
     if (!order) {
       throw new Error(`No order associated with Paystack reference ${reference}`);
     }
@@ -177,7 +179,13 @@ export const paymentsService = {
       };
     }
 
-    // 3. Ensure verified amount matches order total down to the exact cent
+    // 3. Strict Currency and Financial Amount Integrity Checks
+    if (data.currency.toUpperCase() !== order.currency.toUpperCase()) {
+      throw new Error(
+        `Currency mismatch! Paid: ${data.currency}, Expected: ${order.currency}`
+      );
+    }
+
     const expectedAmountKobo = Math.round(order.totalAmount * 100);
     if (data.amount !== expectedAmountKobo) {
       throw new Error(
@@ -185,51 +193,75 @@ export const paymentsService = {
       );
     }
 
-    // 4. Insert verified payment record (Protected by UNIQUE (order_id) WHERE status = 'success')
-    const { data: paymentRecord, error: payErr } = await supabase
-      .from('payments')
-      .insert({
-        organization_id: order.organizationId,
-        order_id: order.id,
-        paystack_reference: reference,
-        amount_paid: Number((data.amount / 100).toFixed(2)),
-        currency: data.currency,
-        channel: data.channel || 'unknown',
-        status: 'success',
-        paystack_response: data,
-        verified_at: data.paid_at || new Date().toISOString()
-      })
-      .select()
-      .single();
+    // 4. Atomic PostgreSQL Transaction: Payment Insert + Order State + Stock Finalization
+    const paymentRecordAmount = Number((data.amount / 100).toFixed(2));
+    const paymentRecordVerifiedAt = data.paid_at || new Date().toISOString();
+    let paymentRecordId: string;
 
-    if (payErr || !paymentRecord) throw payErr;
-
-    // 5. Mark order as paid
-    await ordersRepository.markOrderPaid(order.id);
-
-    // 6. Atomically finalize stock deduction in PostgreSQL
-    const { error: stockErr } = await supabase.rpc('finalize_order_stock', {
-      p_order_id: order.id
+    const { data: rpcResult, error: rpcErr } = await supabase.rpc('confirm_order_payment', {
+      p_organization_id: order.organizationId,
+      p_order_id: order.id,
+      p_paystack_reference: reference,
+      p_amount_paid: paymentRecordAmount,
+      p_currency: data.currency,
+      p_channel: data.channel || 'unknown',
+      p_paystack_response: data,
+      p_paid_at: paymentRecordVerifiedAt
     });
 
-    if (stockErr) {
-      console.error(
-        `[CRITICAL] Stock finalization failed for paid order ${order.id}:`,
-        stockErr.message
+    if (rpcErr) {
+      console.warn(
+        `[Payment] confirm_order_payment RPC failed, running guarded fallback:`,
+        rpcErr.message
       );
-    }
 
-    // 7. Update customer total spend and orders metrics
-    try {
-      await supabase.rpc('increment_customer_orders', {
-        p_customer_id: order.customerId,
-        p_spend: order.totalAmount
+      // Guarded Fallback for pre-migration environments:
+      const { data: payRecord, error: payErr } = await supabase
+        .from('payments')
+        .insert({
+          organization_id: order.organizationId,
+          order_id: order.id,
+          paystack_reference: reference,
+          amount_paid: paymentRecordAmount,
+          currency: data.currency,
+          channel: data.channel || 'unknown',
+          status: 'success',
+          paystack_response: data,
+          verified_at: paymentRecordVerifiedAt
+        })
+        .select()
+        .single();
+
+      if (payErr || !payRecord) throw payErr || new Error('Failed to record payment');
+      paymentRecordId = payRecord.id;
+
+      // Mark order paid strictly tenant-scoped
+      await ordersRepository.markOrderPaid(order.organizationId, order.id);
+
+      // Finalize stock deduction
+      const { error: stockErr } = await supabase.rpc('finalize_order_stock', {
+        p_order_id: order.id
       });
-    } catch {
-      // Non-blocking metric increment
+      if (stockErr) {
+        console.error(
+          `[CRITICAL] Stock finalization failed for paid order ${order.id}:`,
+          stockErr.message
+        );
+      }
+
+      try {
+        await supabase.rpc('increment_customer_orders', {
+          p_customer_id: order.customerId,
+          p_spend: order.totalAmount
+        });
+      } catch {
+        // Non-blocking metric increment
+      }
+    } else {
+      paymentRecordId = rpcResult?.payment_id || order.id;
     }
 
-    // 8. Dispatch automated WhatsApp receipt & update CRM chat
+    // 5. Dispatch automated WhatsApp receipt & update CRM chat (Truthful messaging)
     if (order.customerPhone) {
       try {
         const { whatsappService } = await import('../whatsapp/whatsapp.service.js');
@@ -257,7 +289,7 @@ export const paymentsService = {
           order.shippingAddress ? `• *Delivery Address:* ${order.shippingAddress}` : '',
           ``,
           `📦 *What happens next?*`,
-          `Your kit is now being packaged and prepared for shipping. We will notify you once your package is on its way! 🚚`
+          `Your payment has been confirmed! We will notify you here once your order is prepared and dispatched 🚚`
         ]
           .filter(Boolean)
           .join('\n');
@@ -291,16 +323,16 @@ export const paymentsService = {
     }
 
     return {
-      id: paymentRecord.id,
-      organizationId: paymentRecord.organization_id,
-      orderId: paymentRecord.order_id,
-      paystackReference: paymentRecord.paystack_reference,
-      amountPaid: Number(paymentRecord.amount_paid),
-      currency: paymentRecord.currency,
-      channel: paymentRecord.channel,
-      status: paymentRecord.status,
-      verifiedAt: paymentRecord.verified_at,
-      createdAt: paymentRecord.created_at
+      id: paymentRecordId,
+      organizationId: order.organizationId,
+      orderId: order.id,
+      paystackReference: reference,
+      amountPaid: paymentRecordAmount,
+      currency: data.currency,
+      channel: data.channel || 'unknown',
+      status: 'success',
+      verifiedAt: paymentRecordVerifiedAt,
+      createdAt: new Date().toISOString()
     };
   }
 };
