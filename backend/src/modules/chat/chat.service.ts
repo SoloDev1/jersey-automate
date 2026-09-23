@@ -31,7 +31,10 @@ export const chatService = {
   ): Promise<{ conversation: ConversationRecord; messages: MessageRecord[] }> {
     const conversation = await chatRepository.getConversationById(organizationId, conversationId);
     if (!conversation) {
-      throw new Error(`Conversation ${conversationId} not found`);
+      const notFoundErr: any = new Error(`Conversation ${conversationId} not found`);
+      notFoundErr.statusCode = 404;
+      notFoundErr.code = 'CONVERSATION_NOT_FOUND';
+      throw notFoundErr;
     }
 
     // Reset unread count upon viewing
