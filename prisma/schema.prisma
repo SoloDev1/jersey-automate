@@ -1,0 +1,456 @@
+// ==============================================================================
+// PRISMA SCHEMA - JERSEY AUTOMATE (NEON POSTGRESQL)
+// ==============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ------------------------------------------------------------------------------
+// 1. ORGANIZATIONS (Tenant Foundation)
+// ------------------------------------------------------------------------------
+model Organization {
+  id        String   @id @db.VarChar(50) // e.g. 'org_default'
+  name      String   @db.VarChar(255)
+  slug      String   @unique @db.VarChar(100)
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  // Relations
+  settings           Setting?
+  jerseys            Jersey[]
+  jerseyInventories  JerseyInventory[]
+  customers          Customer[]
+  conversations      Conversation[]
+  messages           Message[]
+  orders             Order[]
+  stockReservations  StockReservation[]
+  inventoryMovements InventoryMovement[]
+  payments           Payment[]
+  auditLogs          AuditLog[]
+  aiMonthlyBudgets   AiMonthlyBudget[]
+  aiUsageLogs        AiUsageLog[]
+  webhookLogs        WebhookLog[]
+
+  @@map("organizations")
+}
+
+// ------------------------------------------------------------------------------
+// 2. SETTINGS (Store Config & WhatsApp Credentials)
+// ------------------------------------------------------------------------------
+model Setting {
+  organizationId String       @id @map("organization_id") @db.VarChar(50)
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  storeName          String  @default("Jersey Reseller Hub") @map("store_name") @db.VarChar(255)
+  currency           String  @default("NGN") @db.VarChar(10)
+  defaultShippingFee Decimal @default(2000.00) @map("default_shipping_fee") @db.Decimal(10, 2)
+  customPrintingFee  Decimal @default(3000.00) @map("custom_printing_fee") @db.Decimal(10, 2)
+
+  // WhatsApp Meta Integration Secrets
+  wabaId               String?   @map("waba_id") @db.VarChar(100)
+  phoneNumberId        String?   @map("phone_number_id") @db.VarChar(100)
+  displayPhoneNumber   String?   @map("display_phone_number") @db.VarChar(50)
+  accessTokenEncrypted String?   @map("access_token_encrypted") @db.Text
+  tokenExpiresAt       DateTime? @map("token_expires_at") @db.Timestamptz(6)
+  webhookVerifyToken   String?   @map("webhook_verify_token") @db.VarChar(255)
+  isWhatsappConnected  Boolean?  @default(false) @map("is_whatsapp_connected")
+
+  // AI Governance
+  maxMonthlyAiBudgetUsd Decimal @default(15.00) @map("max_monthly_ai_budget_usd") @db.Decimal(10, 2)
+  aiEnabledGlobally     Boolean @default(true) @map("ai_enabled_globally")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("settings")
+}
+
+// ------------------------------------------------------------------------------
+// 3. DISCOVERED KITS (Global FootyHeadlines Scraped Library)
+// ------------------------------------------------------------------------------
+model DiscoveredKit {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  league          String   @db.VarChar(100)
+  team            String   @db.VarChar(150)
+  season          String   @db.VarChar(50)
+  kitType         String   @map("kit_type") @db.VarChar(100)
+  title           String   @db.VarChar(255)
+  rawImageUrl     String   @map("raw_image_url") @db.Text
+  storageImageUrl String?  @map("storage_image_url") @db.Text
+  sourceUrl       String?  @map("source_url") @db.Text
+  scrapedAt       DateTime @default(now()) @map("scraped_at") @db.Timestamptz(6)
+
+  jerseys Jersey[]
+
+  @@unique([league, team, season, kitType], name: "uq_discovered_kit")
+  @@index([league, team, season], name: "idx_discovered_kits_lookup")
+  @@map("discovered_kits")
+}
+
+// ------------------------------------------------------------------------------
+// 4. JERSEYS (Tenant Product Catalog)
+// ------------------------------------------------------------------------------
+model Jersey {
+  id              String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId  String         @map("organization_id") @db.VarChar(50)
+  organization    Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  discoveredKitId String?        @map("discovered_kit_id") @db.Uuid
+  discoveredKit   DiscoveredKit? @relation(fields: [discoveredKitId], references: [id], onDelete: SetNull)
+
+  title       String   @db.VarChar(255)
+  league      String   @db.VarChar(100)
+  team        String   @db.VarChar(150)
+  season      String   @db.VarChar(50)
+  kitType     String   @map("kit_type") @db.VarChar(100)
+  basePrice   Decimal  @map("base_price") @db.Decimal(10, 2)
+  imageUrl    String   @map("image_url") @db.Text
+  description String?  @db.Text
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  inventory          JerseyInventory[]
+  messages           Message[]
+  orderItems         OrderItem[]
+  stockReservations  StockReservation[]
+  inventoryMovements InventoryMovement[]
+
+  @@index([organizationId, team, league, isActive], name: "idx_jerseys_org_search")
+  @@map("jerseys")
+}
+
+// ------------------------------------------------------------------------------
+// 5. JERSEY INVENTORY (Per-Size Stock Levels & Holds)
+// ------------------------------------------------------------------------------
+model JerseyInventory {
+  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String       @map("organization_id") @db.VarChar(50)
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  jerseyId       String       @map("jersey_id") @db.Uuid
+  jersey         Jersey       @relation(fields: [jerseyId], references: [id], onDelete: Cascade)
+
+  size             String   @db.VarChar(20) // XS, S, M, L, XL, XXL, 3XL
+  quantityOnHand   Int      @default(0) @map("quantity_on_hand")
+  quantityReserved Int      @default(0) @map("quantity_reserved")
+  updatedAt        DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([jerseyId, size], name: "uq_jersey_size")
+  @@index([organizationId, jerseyId], name: "idx_inventory_lookup")
+  @@map("jersey_inventory")
+}
+
+// ------------------------------------------------------------------------------
+// 6. CUSTOMERS (Tenant-Scoped Buyers)
+// ------------------------------------------------------------------------------
+model Customer {
+  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String       @map("organization_id") @db.VarChar(50)
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  phoneNumber     String   @map("phone_number") @db.VarChar(50)
+  displayName     String?  @map("display_name") @db.VarChar(150)
+  shippingAddress String?  @map("shipping_address") @db.Text
+  notes           String?  @db.Text
+  totalOrders     Int      @default(0) @map("total_orders")
+  totalSpend      Decimal  @default(0.00) @map("total_spend") @db.Decimal(10, 2)
+  lastContactAt   DateTime @default(now()) @map("last_contact_at") @db.Timestamptz(6)
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  conversations Conversation[]
+  orders        Order[]
+
+  @@unique([organizationId, phoneNumber], name: "uq_customer_org_phone")
+  @@index([organizationId, phoneNumber], name: "idx_customers_org_phone")
+  @@map("customers")
+}
+
+// ------------------------------------------------------------------------------
+// 7. CONVERSATIONS (WhatsApp Chat Threads)
+// ------------------------------------------------------------------------------
+model Conversation {
+  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String       @map("organization_id") @db.VarChar(50)
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  customerId     String       @map("customer_id") @db.Uuid
+  customer       Customer     @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  status             String   @default("open") @db.VarChar(50) // open, needs_reply, resolved, archived
+  isAiEnabled        Boolean  @default(true) @map("is_ai_enabled")
+  lastMessagePreview String?  @map("last_message_preview") @db.Text
+  lastMessageAt      DateTime @default(now()) @map("last_message_at") @db.Timestamptz(6)
+  unreadCount        Int      @default(0) @map("unread_count")
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  messages    Message[]
+  aiUsageLogs AiUsageLog[]
+
+  @@unique([organizationId, customerId], name: "uq_org_customer_conversation")
+  @@index([organizationId, status, lastMessageAt(sort: Desc)], name: "idx_conversations_org")
+  @@index([customerId], name: "idx_conversations_customer")
+  @@map("conversations")
+}
+
+// ------------------------------------------------------------------------------
+// 8. MESSAGES (WhatsApp Message Ledger)
+// ------------------------------------------------------------------------------
+model Message {
+  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String       @map("organization_id") @db.VarChar(50)
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  conversationId String       @map("conversation_id") @db.Uuid
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  metaMessageId  String?  @unique @map("meta_message_id") @db.VarChar(150)
+  direction      String   @db.VarChar(20) // inbound, outbound
+  type           String   @default("text") @db.VarChar(50) // text, image, interactive_kit, payment_link
+  body           String?  @db.Text
+  mediaUrl       String?  @map("media_url") @db.Text
+  jerseyId       String?  @map("jersey_id") @db.Uuid
+  jersey         Jersey?  @relation(fields: [jerseyId], references: [id], onDelete: SetNull)
+  deliveryStatus String   @default("sent") @map("delivery_status") @db.VarChar(50)
+  errorMessage   String?  @map("error_message") @db.Text
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([conversationId, createdAt(sort: Asc)], name: "idx_messages_conversation")
+  @@index([metaMessageId], name: "idx_messages_meta_id")
+  @@map("messages")
+}
+
+// ------------------------------------------------------------------------------
+// 9. ORDERS (Sales Pipeline & Financial Ledger)
+// ------------------------------------------------------------------------------
+model Order {
+  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String       @map("organization_id") @db.VarChar(50)
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  orderNumber    Int          @unique @default(autoincrement()) @map("order_number")
+  customerId     String       @map("customer_id") @db.Uuid
+  customer       Customer     @relation(fields: [customerId], references: [id], onDelete: Restrict)
+
+  subtotal    Decimal @db.Decimal(10, 2)
+  shippingFee Decimal @default(0.00) @map("shipping_fee") @db.Decimal(10, 2)
+  totalAmount Decimal @map("total_amount") @db.Decimal(10, 2)
+  currency    String  @default("NGN") @db.VarChar(10)
+
+  paymentStatus     String @default("pending") @map("payment_status") @db.VarChar(50)
+  fulfillmentStatus String @default("unfulfilled") @map("fulfillment_status") @db.VarChar(50)
+
+  paystackReference    String?   @unique @map("paystack_reference") @db.VarChar(150)
+  paystackAccessCode   String?   @map("paystack_access_code") @db.VarChar(150)
+  paymentUrl           String?   @map("payment_url") @db.Text
+  reservationExpiresAt DateTime? @map("reservation_expires_at") @db.Timestamptz(6)
+
+  shippingAddress        String?  @map("shipping_address") @db.Text
+  shippingTrackingNumber String?  @map("shipping_tracking_number") @db.VarChar(100)
+  notes                  String?  @db.Text
+  createdAt              DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  orderItems         OrderItem[]
+  stockReservations  StockReservation[]
+  inventoryMovements InventoryMovement[]
+  payments           Payment[]
+
+  @@index([organizationId, paymentStatus, fulfillmentStatus], name: "idx_orders_org")
+  @@index([customerId], name: "idx_orders_customer")
+  @@index([paystackReference], name: "idx_orders_paystack_ref")
+  @@index([paymentStatus, reservationExpiresAt], name: "idx_orders_reservations")
+  @@map("orders")
+}
+
+// ------------------------------------------------------------------------------
+// 10. ORDER ITEMS (Multiple Items per Order)
+// ------------------------------------------------------------------------------
+model OrderItem {
+  id       String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orderId  String @map("order_id") @db.Uuid
+  order    Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  jerseyId String @map("jersey_id") @db.Uuid
+  jersey   Jersey @relation(fields: [jerseyId], references: [id], onDelete: Restrict)
+
+  size         String   @db.VarChar(20)
+  quantity     Int
+  unitPrice    Decimal  @map("unit_price") @db.Decimal(10, 2)
+  customName   String?  @map("custom_name") @db.VarChar(100)
+  customNumber String?  @map("custom_number") @db.VarChar(10)
+  printingFee  Decimal  @default(0.00) @map("printing_fee") @db.Decimal(10, 2)
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  stockReservations StockReservation[]
+
+  @@index([orderId], name: "idx_order_items_order")
+  @@map("order_items")
+}
+
+// ------------------------------------------------------------------------------
+// 11. STOCK RESERVATIONS (Order-Linked Inventory Holds)
+// ------------------------------------------------------------------------------
+model StockReservation {
+  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String       @map("organization_id") @db.VarChar(50)
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  orderId        String       @map("order_id") @db.Uuid
+  order          Order        @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  orderItemId    String       @map("order_item_id") @db.Uuid
+  orderItem      OrderItem    @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
+  jerseyId       String       @map("jersey_id") @db.Uuid
+  jersey         Jersey       @relation(fields: [jerseyId], references: [id], onDelete: Restrict)
+
+  size        String    @db.VarChar(20)
+  quantity    Int
+  status      String    @default("active") @db.VarChar(50) // active, finalized, released, expired
+  expiresAt   DateTime  @map("expires_at") @db.Timestamptz(6)
+  finalizedAt DateTime? @map("finalized_at") @db.Timestamptz(6)
+  releasedAt  DateTime? @map("released_at") @db.Timestamptz(6)
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  inventoryMovements InventoryMovement[]
+
+  @@index([organizationId, status, expiresAt], name: "idx_reservations_org")
+  @@index([orderId], name: "idx_reservations_order")
+  @@map("stock_reservations")
+}
+
+// ------------------------------------------------------------------------------
+// 12. INVENTORY MOVEMENTS (Stock Audit Ledger)
+// ------------------------------------------------------------------------------
+model InventoryMovement {
+  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String       @map("organization_id") @db.VarChar(50)
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  jerseyId       String       @map("jersey_id") @db.Uuid
+  jersey         Jersey       @relation(fields: [jerseyId], references: [id], onDelete: Restrict)
+
+  size                   String            @db.VarChar(20)
+  movementType           String            @map("movement_type") @db.VarChar(50)
+  quantityDelta          Int               @map("quantity_delta")
+  quantityOnHandBefore   Int               @map("quantity_on_hand_before")
+  quantityOnHandAfter    Int               @map("quantity_on_hand_after")
+  quantityReservedBefore Int               @map("quantity_reserved_before")
+  quantityReservedAfter  Int               @map("quantity_reserved_after")
+  orderId                String?           @map("order_id") @db.Uuid
+  order                  Order?            @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  reservationId          String?           @map("reservation_id") @db.Uuid
+  reservation            StockReservation? @relation(fields: [reservationId], references: [id], onDelete: SetNull)
+  actor                  String            @db.VarChar(100)
+  reason                 String?           @db.Text
+  createdAt              DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([organizationId, jerseyId, createdAt(sort: Desc)], name: "idx_movements_org")
+  @@index([orderId], name: "idx_movements_order")
+  @@map("inventory_movements")
+}
+
+// ------------------------------------------------------------------------------
+// 13. PAYMENTS (Paystack Transaction Verification Log)
+// ------------------------------------------------------------------------------
+model Payment {
+  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String       @map("organization_id") @db.VarChar(50)
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  orderId        String       @map("order_id") @db.Uuid
+  order          Order        @relation(fields: [orderId], references: [id], onDelete: Restrict)
+
+  paystackReference String   @unique @map("paystack_reference") @db.VarChar(150)
+  amountPaid        Decimal  @map("amount_paid") @db.Decimal(10, 2)
+  currency          String   @db.VarChar(10)
+  channel           String?  @db.VarChar(50)
+  status            String   @db.VarChar(50) // success, failed, abandoned
+  paystackResponse  Json     @map("paystack_response")
+  verifiedAt        DateTime @default(now()) @map("verified_at") @db.Timestamptz(6)
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([organizationId], name: "idx_payments_org")
+  @@index([paystackReference], name: "idx_payments_ref")
+  @@map("payments")
+}
+
+// ------------------------------------------------------------------------------
+// 14. AUDIT LOGS (Security & Action Auditing)
+// ------------------------------------------------------------------------------
+model AuditLog {
+  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String       @map("organization_id") @db.VarChar(50)
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  actor        String   @db.VarChar(100)
+  action       String   @db.VarChar(100)
+  targetEntity String   @map("target_entity") @db.VarChar(50)
+  targetId     String?  @map("target_id") @db.VarChar(100)
+  details      Json?
+  ipAddress    String?  @map("ip_address") @db.VarChar(50)
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([organizationId, createdAt(sort: Desc)], name: "idx_audit_logs_org")
+  @@map("audit_logs")
+}
+
+// ------------------------------------------------------------------------------
+// 15. AI MONTHLY BUDGETS (Concurrency-Safe Budget Ledger)
+// ------------------------------------------------------------------------------
+model AiMonthlyBudget {
+  organizationId String       @map("organization_id") @db.VarChar(50)
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  monthDate      DateTime     @map("month_date") @db.Date // First day of month
+
+  maxBudgetUsd    Decimal  @default(15.00) @map("max_budget_usd") @db.Decimal(10, 2)
+  currentSpendUsd Decimal  @default(0.000000) @map("current_spend_usd") @db.Decimal(10, 6)
+  isLocked        Boolean  @default(false) @map("is_locked")
+  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@id([organizationId, monthDate])
+  @@map("ai_monthly_budgets")
+}
+
+// ------------------------------------------------------------------------------
+// 16. AI USAGE LOGS (Append-Only Token Tracking)
+// ------------------------------------------------------------------------------
+model AiUsageLog {
+  id             String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String        @map("organization_id") @db.VarChar(50)
+  organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  conversationId String?       @map("conversation_id") @db.Uuid
+  conversation   Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+
+  model            String   @db.VarChar(100)
+  promptTokens     Int      @map("prompt_tokens")
+  completionTokens Int      @map("completion_tokens")
+  totalTokens      Int      @map("total_tokens")
+  estimatedCostUsd Decimal  @map("estimated_cost_usd") @db.Decimal(10, 6)
+  toolsCalled      String[] @map("tools_called")
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([organizationId, createdAt(sort: Desc)], name: "idx_ai_usage_org")
+  @@map("ai_usage_logs")
+}
+
+// ------------------------------------------------------------------------------
+// 17. WEBHOOK LOGS (Raw Ingest Audit with Idempotency Key)
+// ------------------------------------------------------------------------------
+model WebhookLog {
+  id             String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String?       @map("organization_id") @db.VarChar(50)
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  source         String   @db.VarChar(50) // whatsapp, paystack
+  eventType      String?  @map("event_type") @db.VarChar(100)
+  idempotencyKey String?  @unique @map("idempotency_key") @db.VarChar(150)
+  payload        Json
+  processed      Boolean  @default(false)
+  errorMessage   String?  @map("error_message") @db.Text
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([idempotencyKey], name: "idx_webhook_logs_key")
+  @@map("webhook_logs")
+}

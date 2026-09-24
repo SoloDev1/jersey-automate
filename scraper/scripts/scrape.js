@@ -6,28 +6,12 @@ import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
-import { createClient } from '@supabase/supabase-js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Load .env from project root
 dotenv.config({ path: path.resolve(__dirname, '../../.env') });
-
-// Supabase configuration
-const SUPABASE_URL = process.env.SUPABASE_URL || '';
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
-const isSupabaseConfigured =
-  Boolean(SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY) &&
-  !SUPABASE_URL.includes('placeholder') &&
-  !SUPABASE_SERVICE_ROLE_KEY.includes('placeholder');
-
-let supabase = null;
-if (isSupabaseConfigured) {
-  supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-    auth: { persistSession: false }
-  });
-}
 
 // Target Overview URL
 const TARGET_URL =
@@ -236,45 +220,6 @@ async function scrapeFootyHeadlines() {
     if (buffer) {
       successCount++;
       item.localFilePath = path.relative(BASE_DOWNLOAD_DIR, destFilePath);
-
-      // Upload to Supabase Storage & sync to discovered_kits if configured
-      if (supabase) {
-        try {
-          const storagePath = `kits/${sanitizeName(item.season)}/${leagueFolder}/${clubFolder}/${filename}`;
-          const { error: uploadError } = await supabase.storage
-            .from('products')
-            .upload(storagePath, buffer, {
-              contentType: 'image/jpeg',
-              upsert: true
-            });
-
-          let cdnUrl = item.imageUrl;
-          if (!uploadError) {
-            const { data: publicUrlData } = supabase.storage
-              .from('products')
-              .getPublicUrl(storagePath);
-            cdnUrl = publicUrlData.publicUrl;
-          }
-
-          // Insert or update in discovered_kits
-          await supabase.from('discovered_kits').upsert(
-            {
-              league: item.league,
-              team: item.team,
-              season: item.season,
-              kit_type: item.kitType,
-              title: item.title,
-              raw_image_url: item.imageUrl,
-              storage_image_url: cdnUrl,
-              source_url: item.sourceUrl,
-              scraped_at: new Date().toISOString()
-            },
-            { onConflict: 'league,team,season,kit_type' }
-          );
-        } catch (dbErr) {
-          // Non-blocking database sync failure
-        }
-      }
 
       console.log(
         `[${completedCount}/${allKits.length}] ✔️ ${item.league} > ${item.team} > ${item.kitName}`

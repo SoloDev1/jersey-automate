@@ -1,0 +1,29 @@
+{
+  "description": "MVP Catalog Filter: Control which leagues and clubs are active and uploaded to storage",
+  "leagues": {
+    "Premier League": "ALL",
+    "La Liga": [
+      "FC Barcelona",
+      "Real Madrid",
+      "Atletico Madrid"
+    ],
+    "Bundesliga": [
+      "Bayern München",
+      "Dortmund",
+      "Bayer Leverkusen"
+    ],
+    "Ligue 1": [
+      "PSG"
+    ],
+    "Serie A": [
+      "Juventus",
+      "Inter Milan",
+      "Milan",
+      "Napoli",
+      "AS Roma"
+    ]
+  },
+  "excludeTeams": [
+    "AFC Richmond"
+  ]
+}
