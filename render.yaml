@@ -1,7 +1,7 @@
 services:
   - type: web
     name: jersey-automate
-    env: node
+    runtime: node
     plan: free
     buildCommand: npm install && npx prisma generate && npm run build
     startCommand: node dist/server.js
