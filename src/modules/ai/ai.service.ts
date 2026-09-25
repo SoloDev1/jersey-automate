@@ -37,7 +37,8 @@ export class AiService {
     conversationId: string,
     customer: CustomerContext,
     userMessage: string,
-    inboundTimestamp?: Date
+    inboundTimestamp?: Date,
+    currentMessageId?: string
   ): Promise<void> {
     try {
       // 1. Check if AI is enabled for this conversation (Human Takeover check)
@@ -92,7 +93,8 @@ export class AiService {
       const currentInboundTime = inboundTimestamp || new Date();
       const previousMeaningfulMessage = await chatRepository.getLastMeaningfulMessage(
         organizationId,
-        conversationId
+        conversationId,
+        currentMessageId
       );
 
       const prevTimeMs = previousMeaningfulMessage?.messageTimestamp

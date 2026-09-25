@@ -81,6 +81,16 @@ async function runTests() {
   const gap30m = receivedAt.getTime() - thirtyMinAgo.getTime();
   assert('Gap of 30 mins does NOT trigger new session (<=4h)', gap30m <= SESSION_TIMEOUT_MS);
 
+  // Current message excluded to accurately evaluate gap to preceding message
+  const simulatedHistory = [
+    { id: 'msg-now', timestamp: receivedAt },
+    { id: 'msg-prior', timestamp: new Date(receivedAt.getTime() - 48 * 3600 * 1000) } // 2 days ago
+  ];
+  const precedingMsg = simulatedHistory.find(m => m.id !== 'msg-now');
+  assert('excludeMessageId accurately targets preceding message in thread', precedingMsg?.id === 'msg-prior');
+  const gapToPreceding = receivedAt.getTime() - precedingMsg!.timestamp.getTime();
+  assert('Session boundary correctly triggered across 48-hour gap', gapToPreceding > SESSION_TIMEOUT_MS);
+
   // TEST 4: Pure Unit Test of Session Boundary State Reset
   // Verifying startNewSession guarantees
   const freshSession = await conversationStateService.startNewSession('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000002');

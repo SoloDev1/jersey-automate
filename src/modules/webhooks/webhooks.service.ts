@@ -491,7 +491,8 @@ export const webhooksService = {
                   conversation.id,
                   customer,
                   body,
-                  messageTimestamp
+                  messageTimestamp,
+                  savedMessage.id
                 );
               }
             }
@@ -509,7 +510,8 @@ export const webhooksService = {
     conversationId: string,
     customer: { id: string; phoneNumber: string; displayName: string | null },
     incomingText: string,
-    inboundTimestamp?: Date
+    inboundTimestamp?: Date,
+    currentMessageId?: string
   ): Promise<void> {
     try {
       const { aiService } = await import('../ai/ai.service.js');
@@ -518,7 +520,8 @@ export const webhooksService = {
         conversationId,
         customer,
         incomingText,
-        inboundTimestamp
+        inboundTimestamp,
+        currentMessageId
       );
     } catch (error: unknown) {
       const errMsg = error instanceof Error ? error.message : String(error);
