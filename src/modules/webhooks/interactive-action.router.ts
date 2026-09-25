@@ -161,7 +161,7 @@ export const interactiveActionRouter = {
             customerEmail
           );
 
-          // 4. Update conversation state
+          // 4. Update conversation state (active commerce fields only)
           await conversationStateService.updateState(organizationId, conversationId, {
             stage: 'awaiting_payment',
             jerseyId: jersey.id,
@@ -169,9 +169,7 @@ export const interactiveActionRouter = {
             kitType: jersey.kitType,
             size: action.size,
             quantity: 1,
-            orderId: order.id,
-            orderNumber: order.orderNumber,
-            paymentUrl: paymentInit.authorizationUrl
+            orderId: order.id
           });
 
           // 5. Deliver interactive Paystack CTA card

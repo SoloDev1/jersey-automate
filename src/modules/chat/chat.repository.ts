@@ -84,6 +84,8 @@ function mapMessageToRecord(row: MessageWithJersey): MessageRecord {
     jerseyId: row.jerseyId,
     deliveryStatus: row.deliveryStatus as 'received' | 'sent' | 'delivered' | 'read' | 'failed',
     errorMessage: row.errorMessage,
+    messageTimestamp: row.messageTimestamp ? row.messageTimestamp.toISOString() : undefined,
+    receivedAt: row.receivedAt ? row.receivedAt.toISOString() : undefined,
     createdAt: row.createdAt.toISOString(),
     jerseyTitle: row.jersey?.title ?? undefined,
     jerseyImage: row.jersey?.imageUrl ?? undefined
@@ -267,6 +269,9 @@ export const chatRepository = {
       mediaUrl?: string | null;
       jerseyId?: string | null;
       deliveryStatus?: 'received' | 'sent' | 'delivered' | 'read' | 'failed';
+      messageTimestamp?: Date | null;
+      receivedAt?: Date | null;
+      isStale?: boolean;
     }
   ): Promise<MessageRecord | null> {
     return prisma.$transaction(async (tx) => {
@@ -310,7 +315,9 @@ export const chatRepository = {
             body: data.body || null,
             mediaUrl: data.mediaUrl || null,
             jerseyId: data.jerseyId || null,
-            deliveryStatus: data.deliveryStatus || (data.direction === 'inbound' ? 'received' : 'sent')
+            deliveryStatus: data.deliveryStatus || (data.direction === 'inbound' ? 'received' : 'sent'),
+            messageTimestamp: data.messageTimestamp || null,
+            receivedAt: data.receivedAt || null
           },
           include: {
             jersey: {
@@ -329,30 +336,65 @@ export const chatRepository = {
         throw err;
       }
 
-      // 4. Atomically update parent conversation snippet, timestamp, and unread counters
-      const previewText =
-        data.body || (data.type === 'interactive_kit' ? '⚽ Jersey Card' : 'Media attachment');
+      // 4. Atomically update parent conversation snippet, timestamp, and unread counters.
+      // CRITICAL: Stale replays do NOT advance the active conversation clock or unread counters.
+      if (!data.isStale) {
+        const previewText =
+          data.body || (data.type === 'interactive_kit' ? '⚽ Jersey Card' : 'Media attachment');
 
-      const conversationUpdate: Prisma.ConversationUpdateInput = {
-        lastMessagePreview: previewText.slice(0, 150),
-        lastMessageAt: new Date()
-      };
+        const conversationUpdate: Prisma.ConversationUpdateInput = {
+          lastMessagePreview: previewText.slice(0, 150),
+          lastMessageAt: data.messageTimestamp || new Date()
+        };
 
-      if (data.direction === 'inbound') {
-        conversationUpdate.status = 'needs_reply';
-        conversationUpdate.unreadCount = { increment: 1 };
+        if (data.direction === 'inbound') {
+          conversationUpdate.status = 'needs_reply';
+          conversationUpdate.unreadCount = { increment: 1 };
+        }
+
+        await tx.conversation.updateMany({
+          where: {
+            id: data.conversationId,
+            organizationId
+          },
+          data: conversationUpdate
+        });
       }
-
-      await tx.conversation.updateMany({
-        where: {
-          id: data.conversationId,
-          organizationId
-        },
-        data: conversationUpdate
-      });
 
       return mapMessageToRecord(created);
     });
+  },
+
+  /**
+   * Retrieves the latest meaningful message for a conversation (excluding a specific message ID if provided).
+   * Used for backend-driven session boundary calculation.
+   */
+  async getLastMeaningfulMessage(
+    organizationId: string,
+    conversationId: string,
+    excludeMessageId?: string
+  ): Promise<MessageRecord | null> {
+    const row = await prisma.message.findFirst({
+      where: {
+        organizationId,
+        conversationId,
+        ...(excludeMessageId ? { id: { not: excludeMessageId } } : {})
+      },
+      orderBy: [
+        { createdAt: 'desc' },
+        { id: 'desc' }
+      ],
+      include: {
+        jersey: {
+          select: {
+            title: true,
+            imageUrl: true
+          }
+        }
+      }
+    });
+
+    return row ? mapMessageToRecord(row) : null;
   },
 
   /**

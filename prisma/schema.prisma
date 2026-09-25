@@ -218,9 +218,11 @@ model Message {
   mediaUrl       String?  @map("media_url") @db.Text
   jerseyId       String?  @map("jersey_id") @db.Uuid
   jersey         Jersey?  @relation(fields: [jerseyId], references: [id], onDelete: SetNull)
-  deliveryStatus String   @default("sent") @map("delivery_status") @db.VarChar(50)
-  errorMessage   String?  @map("error_message") @db.Text
-  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  deliveryStatus   String    @default("sent") @map("delivery_status") @db.VarChar(50)
+  errorMessage     String?   @map("error_message") @db.Text
+  messageTimestamp DateTime? @map("message_timestamp") @db.Timestamptz(6)
+  receivedAt       DateTime? @map("received_at") @db.Timestamptz(6)
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
 
   @@index([conversationId, createdAt(sort: Asc)], name: "idx_messages_conversation")
   @@index([metaMessageId], name: "idx_messages_meta_id")

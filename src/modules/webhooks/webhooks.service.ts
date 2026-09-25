@@ -380,7 +380,7 @@ export const webhooksService = {
                 const state = await conversationStateService.getState(organizationId, conversation.id);
 
                 if (/^(cancel|reset|restart|clear|start over)$/i.test(trimmed)) {
-                  await conversationStateService.resetState(organizationId, conversation.id);
+                  await conversationStateService.startNewSession(organizationId, conversation.id);
                   await whatsappService.sendTextMessage(organizationId, {
                     toPhone: fromPhone,
                     body: '🔄 Your shopping session has been reset. Which football club or jersey are you looking for today? ⚽'

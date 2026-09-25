@@ -7,7 +7,13 @@ export type ShoppingStage =
   | 'awaiting_payment'
   | 'completed';
 
+/**
+ * Ephemeral Transactional Commerce State.
+ * Strictly limited to active shopping session fields.
+ * Does NOT store long-term customer profiles, chat messages, or payment blobs.
+ */
 export interface ConversationState {
+  sessionId: string;
   stage: ShoppingStage;
   jerseyId?: string;
   team?: string;
@@ -15,12 +21,7 @@ export interface ConversationState {
   size?: string;
   quantity?: number;
   orderId?: string;
-  orderNumber?: number;
-  paymentUrl?: string;
   updatedAt: number;
 }
 
-export const DEFAULT_CONVERSATION_STATE: ConversationState = {
-  stage: 'browsing',
-  updatedAt: 0
-};
+export const SESSION_TTL_MS = 30 * 60 * 1000; // 30 minutes inactivity timeout

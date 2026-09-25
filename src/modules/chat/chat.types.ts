@@ -10,9 +10,25 @@ export interface MessageRecord {
   jerseyId?: string | null;
   deliveryStatus: 'received' | 'sent' | 'delivered' | 'read' | 'failed';
   errorMessage?: string | null;
+  messageTimestamp?: string | null;
+  receivedAt?: string | null;
   createdAt: string;
   jerseyTitle?: string;
   jerseyImage?: string;
+}
+
+export interface InboundMessageDTO {
+  metaMessageId: string;
+  fromPhone: string;
+  displayName?: string;
+  type: 'text' | 'image' | 'interactive_kit' | 'payment_link';
+  body: string | null;
+  mediaUrl: string | null;
+  actionId?: string;
+  messageTimestamp: Date;
+  receivedAt: Date;
+  isStale: boolean;
+  staleAgeMinutes: number;
 }
 
 export interface ConversationRecord {

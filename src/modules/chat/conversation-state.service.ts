@@ -1,10 +1,14 @@
+import crypto from 'node:crypto';
 import { prisma } from '../../core/database/prisma.js';
-import { ConversationState, DEFAULT_CONVERSATION_STATE } from './conversation-state.types.js';
+import { ConversationState, SESSION_TTL_MS } from './conversation-state.types.js';
 import { Prisma } from '@prisma/client';
 
 export const conversationStateService = {
   /**
-   * Retrieves the current conversation state or default state if empty.
+   * Retrieves the current transactional commerce state.
+   * Enforces session boundaries: if the active session is older than 30 minutes
+   * or previously marked 'completed', it automatically spins up a fresh session
+   * without destroying long-term customer history or past orders.
    */
   async getState(organizationId: string, conversationId: string): Promise<ConversationState> {
     try {
@@ -13,42 +17,92 @@ export const conversationStateService = {
         select: { state: true }
       });
 
+      const now = Date.now();
+
       if (!conv || !conv.state || typeof conv.state !== 'object') {
-        return { ...DEFAULT_CONVERSATION_STATE, updatedAt: Date.now() };
+        return this.startNewSession(organizationId, conversationId);
       }
 
       const raw = conv.state as Record<string, unknown>;
+      const sessionId = typeof raw.sessionId === 'string' && raw.sessionId ? raw.sessionId : null;
+      const updatedAt = typeof raw.updatedAt === 'number' ? raw.updatedAt : 0;
+      const stage = (raw.stage as ConversationState['stage']) || 'browsing';
+
+      // Session expiration: Inactive for > 30 minutes or order already completed
+      const isExpired = now - updatedAt > SESSION_TTL_MS;
+      const isCompleted = stage === 'completed';
+
+      if (!sessionId || isExpired || isCompleted) {
+        return this.startNewSession(organizationId, conversationId);
+      }
+
       return {
-        stage: (raw.stage as ConversationState['stage']) || 'browsing',
+        sessionId,
+        stage,
         jerseyId: typeof raw.jerseyId === 'string' ? raw.jerseyId : undefined,
         team: typeof raw.team === 'string' ? raw.team : undefined,
         kitType: typeof raw.kitType === 'string' ? raw.kitType : undefined,
         size: typeof raw.size === 'string' ? raw.size : undefined,
         quantity: typeof raw.quantity === 'number' ? raw.quantity : undefined,
         orderId: typeof raw.orderId === 'string' ? raw.orderId : undefined,
-        orderNumber: typeof raw.orderNumber === 'number' ? raw.orderNumber : undefined,
-        paymentUrl: typeof raw.paymentUrl === 'string' ? raw.paymentUrl : undefined,
-        updatedAt: typeof raw.updatedAt === 'number' ? raw.updatedAt : Date.now()
+        updatedAt
       };
     } catch (err: unknown) {
       console.warn(`[ConversationState] Failed to load state for ${conversationId}:`, err);
-      return { ...DEFAULT_CONVERSATION_STATE, updatedAt: Date.now() };
+      return {
+        sessionId: crypto.randomUUID(),
+        stage: 'browsing',
+        updatedAt: Date.now()
+      };
     }
   },
 
   /**
-   * Updates state with a partial patch.
+   * Starts a brand new shopping session.
+   * Generates a new sessionId and resets transactional fields (jersey, size, order)
+   * while keeping long-term customer identity, orders, and messages intact.
+   */
+  async startNewSession(organizationId: string, conversationId: string): Promise<ConversationState> {
+    const freshState: ConversationState = {
+      sessionId: crypto.randomUUID(),
+      stage: 'browsing',
+      updatedAt: Date.now()
+    };
+
+    try {
+      await prisma.conversation.update({
+        where: { id: conversationId },
+        data: {
+          state: freshState as unknown as Prisma.InputJsonValue
+        }
+      });
+    } catch (err: unknown) {
+      console.warn(`[ConversationState] Failed to persist new session for ${conversationId}:`, err);
+    }
+
+    return freshState;
+  },
+
+  /**
+   * Updates the active commerce state with a partial patch within the current session.
+   * Strictly keeps only active commerce fields to prevent database state dumping.
    */
   async updateState(
     organizationId: string,
     conversationId: string,
-    patch: Partial<ConversationState>
+    patch: Partial<Omit<ConversationState, 'sessionId' | 'updatedAt'>>
   ): Promise<ConversationState> {
     try {
       const current = await this.getState(organizationId, conversationId);
       const next: ConversationState = {
-        ...current,
-        ...patch,
+        sessionId: current.sessionId,
+        stage: patch.stage !== undefined ? patch.stage : current.stage,
+        jerseyId: patch.jerseyId !== undefined ? patch.jerseyId : current.jerseyId,
+        team: patch.team !== undefined ? patch.team : current.team,
+        kitType: patch.kitType !== undefined ? patch.kitType : current.kitType,
+        size: patch.size !== undefined ? patch.size : current.size,
+        quantity: patch.quantity !== undefined ? patch.quantity : current.quantity,
+        orderId: patch.orderId !== undefined ? patch.orderId : current.orderId,
         updatedAt: Date.now()
       };
 
@@ -62,24 +116,11 @@ export const conversationStateService = {
       return next;
     } catch (err: unknown) {
       console.warn(`[ConversationState] Failed to persist state for ${conversationId}:`, err);
-      return { ...DEFAULT_CONVERSATION_STATE, ...patch, updatedAt: Date.now() };
+      return {
+        sessionId: crypto.randomUUID(),
+        stage: patch.stage || 'browsing',
+        updatedAt: Date.now()
+      };
     }
-  },
-
-  /**
-   * Resets conversation state back to browsing stage.
-   */
-  async resetState(organizationId: string, conversationId: string): Promise<ConversationState> {
-    return this.updateState(organizationId, conversationId, {
-      stage: 'browsing',
-      jerseyId: undefined,
-      team: undefined,
-      kitType: undefined,
-      size: undefined,
-      quantity: undefined,
-      orderId: undefined,
-      orderNumber: undefined,
-      paymentUrl: undefined
-    });
   }
 };
