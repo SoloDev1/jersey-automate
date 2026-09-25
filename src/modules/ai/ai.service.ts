@@ -9,6 +9,9 @@ import { runAgentTurn } from './ai.agent.js';
 import { ChatMessage, CustomerContext, AiBudgetStatus } from './ai.types.js';
 
 import { getToolsForRoute } from './ai.tools.js';
+import { conversationStateService } from '../chat/conversation-state.service.js';
+
+export const SESSION_TIMEOUT_MS = 4 * 60 * 60 * 1000; // 4 hours inactivity timeout
 
 const SYSTEM_PROMPT = `You are the football jersey sales assistant for Jersey Hub on WhatsApp.
 Help customers find authentic kits, check stock, and view kit cards.
@@ -33,7 +36,8 @@ export class AiService {
     organizationId: string,
     conversationId: string,
     customer: CustomerContext,
-    userMessage: string
+    userMessage: string,
+    inboundTimestamp?: Date
   ): Promise<void> {
     try {
       // 1. Check if AI is enabled for this conversation (Human Takeover check)
@@ -84,17 +88,63 @@ export class AiService {
         return;
       }
 
-      // 4. Fetch recent message history (last 6 messages for focused context)
-      const recentMessages = await chatRepository.getMessages(organizationId, conversationId, 6);
+      // 4. Session Boundary & Explicit Tool State Hygiene
+      const currentInboundTime = inboundTimestamp || new Date();
+      const previousMeaningfulMessage = await chatRepository.getLastMeaningfulMessage(
+        organizationId,
+        conversationId
+      );
 
+      const prevTimeMs = previousMeaningfulMessage?.messageTimestamp
+        ? new Date(previousMeaningfulMessage.messageTimestamp).getTime()
+        : previousMeaningfulMessage?.createdAt
+          ? new Date(previousMeaningfulMessage.createdAt).getTime()
+          : null;
+
+      const isNewSession =
+        !prevTimeMs || currentInboundTime.getTime() - prevTimeMs > SESSION_TIMEOUT_MS;
+
+      // When a session boundary is crossed:
+      // Explicitly reset transactional commerce state (active jersey hold, size selection, pending order)
+      if (isNewSession) {
+        await conversationStateService.startNewSession(organizationId, conversationId);
+      }
+
+      // Fetch recent message history (last 6 messages for focused context)
+      const recentMessages = await chatRepository.getMessages(organizationId, conversationId, 6);
       const messages: ChatMessage[] = [{ role: 'system', content: SYSTEM_PROMPT }];
 
-      for (const m of recentMessages) {
-        if (m.type === 'text' && m.body) {
+      if (isNewSession) {
+        const hoursInactive = prevTimeMs
+          ? Math.round((currentInboundTime.getTime() - prevTimeMs) / 3600000)
+          : null;
+
+        messages.push({
+          role: 'system',
+          content: `[SESSION BOUNDARY: NEW SESSION]
+Customer is returning after ${hoursInactive !== null ? `${hoursInactive}+ hours` : 'a period'} of inactivity.
+- Any prior pending orders, checkouts, or promises to check kit availability are EXPIRED and CANCELLED.
+- DO NOT resume or push past checkout links or availability checks unless the customer explicitly asks about them.
+- If the customer sends a greeting (e.g. "Hi", "Hello"), welcome them back warmly and ask how you can help them today.
+- If the customer asks a specific question (e.g. "Do you have Arsenal kit?"), assist them directly with fresh information.`
+        });
+
+        // Provide previous interest strictly as passive background knowledge
+        if (previousMeaningfulMessage && previousMeaningfulMessage.body) {
           messages.push({
-            role: m.direction === 'inbound' ? 'user' : 'assistant',
-            content: m.body
+            role: 'system',
+            content: `[Customer Background Knowledge: In their previous session, customer discussed: "${previousMeaningfulMessage.body.slice(0, 120)}"]`
           });
+        }
+      } else {
+        // Continuous active session: include recent turns
+        for (const m of recentMessages) {
+          if (m.type === 'text' && m.body) {
+            messages.push({
+              role: m.direction === 'inbound' ? 'user' : 'assistant',
+              content: m.body
+            });
+          }
         }
       }
 

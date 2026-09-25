@@ -105,6 +105,38 @@ export interface MetaWebhookPayload {
   entry?: MetaWebhookEntry[];
 }
 
+export const MAX_WEBHOOK_AGE_MS = 10 * 60 * 1000; // 10 minutes maximum webhook age threshold
+
+/**
+ * Validates and parses Meta's incoming message timestamp.
+ * - Converts integer seconds into a Date object.
+ * - Handles clock skew into the future (> 60s clamped to receivedAt).
+ * - Flags messages older than MAX_WEBHOOK_AGE_MS as stale.
+ */
+export function parseMetaTimestamp(
+  rawTimestamp: string | number | undefined,
+  receivedAt: Date = new Date()
+): { messageTimestamp: Date; isStale: boolean; ageMs: number } {
+  const epochSec = Number(rawTimestamp);
+  let messageTimestamp: Date;
+
+  if (isNaN(epochSec) || epochSec <= 0) {
+    messageTimestamp = receivedAt;
+  } else {
+    messageTimestamp = new Date(epochSec * 1000);
+  }
+
+  // Future clock skew protection: clamp to receivedAt if > 60s into future
+  if (messageTimestamp.getTime() > receivedAt.getTime() + 60_000) {
+    messageTimestamp = receivedAt;
+  }
+
+  const ageMs = Math.max(0, receivedAt.getTime() - messageTimestamp.getTime());
+  const isStale = ageMs > MAX_WEBHOOK_AGE_MS;
+
+  return { messageTimestamp, isStale, ageMs };
+}
+
 export const webhooksService = {
   /**
    * Verifies Meta GET webhook verification challenge handshake using constant-time comparison.
@@ -344,7 +376,11 @@ export const webhooksService = {
               body = `[${msg.type || 'unknown'} message]`;
             }
 
-            // Layer 2 Database Deduplication: messages.meta_message_id unique constraint
+            // Parse and validate Meta send timestamp vs server receipt time
+            const receivedAt = new Date();
+            const { messageTimestamp, isStale, ageMs } = parseMetaTimestamp(msg.timestamp, receivedAt);
+
+            // Layer 2 Database Deduplication & Accurate Timestamps
             const savedMessage = await chatRepository.insertMessage(organizationId, {
               conversationId: conversation.id,
               metaMessageId: msg.id,
@@ -352,8 +388,21 @@ export const webhooksService = {
               type,
               body,
               mediaUrl,
-              deliveryStatus: 'received'
+              deliveryStatus: 'received',
+              messageTimestamp,
+              receivedAt,
+              isStale
             });
+
+            // Boundary 1: Stale Webhook Replay Guard
+            // If the message is older than 10 minutes (e.g. Meta retry while offline), log to audit DB but STOP.
+            if (isStale) {
+              const staleMinutes = Math.round(ageMs / 60000);
+              console.warn(
+                `[Webhooks] Ignored stale WhatsApp message ${msg.id} from ${fromPhone} (sent ${staleMinutes}m ago on ${messageTimestamp.toISOString()}). Saved to audit ledger; AI pipeline & session clock bypassed.`
+              );
+              continue;
+            }
 
             // Real-time Socket.IO emission to connected CRM clients
             if (savedMessage) {
@@ -425,13 +474,14 @@ export const webhooksService = {
                 }
               }
 
-              // 3. Trigger AI response strictly if message was not handled deterministically and AI is enabled
+              // 3. Trigger AI response strictly if message was not handled deterministically, AI is enabled, and message is fresh
               if (!actionHandled && conversation.isAiEnabled && body) {
                 await webhooksService.triggerAiResponse(
                   organizationId,
                   conversation.id,
                   customer,
-                  body
+                  body,
+                  messageTimestamp
                 );
               }
             }
@@ -448,7 +498,8 @@ export const webhooksService = {
     organizationId: string,
     conversationId: string,
     customer: { id: string; phoneNumber: string; displayName: string | null },
-    incomingText: string
+    incomingText: string,
+    inboundTimestamp?: Date
   ): Promise<void> {
     try {
       const { aiService } = await import('../ai/ai.service.js');
@@ -456,7 +507,8 @@ export const webhooksService = {
         organizationId,
         conversationId,
         customer,
-        incomingText
+        incomingText,
+        inboundTimestamp
       );
     } catch (error: unknown) {
       const errMsg = error instanceof Error ? error.message : String(error);
