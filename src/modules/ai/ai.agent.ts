@@ -28,6 +28,19 @@ type ToolExecutor = (
 ) => Promise<unknown>;
 
 const TOOL_EXECUTORS: Record<string, ToolExecutor> = {
+  show_product: (c, a, id) =>
+    toolHandlers.show_product(
+      c.organizationId,
+      c.conversationId,
+      c.customer.phoneNumber,
+      {
+        team: String(a.team || ''),
+        kitType: a.kitType !== undefined ? String(a.kitType) : undefined,
+        jerseyId: a.jerseyId !== undefined ? String(a.jerseyId) : undefined,
+        sendPhoto: a.sendPhoto !== undefined ? Boolean(a.sendPhoto) : true,
+        idempotencyKey: `${c.conversationId}:${id}`
+      }
+    ),
   search_catalog: (c, a) =>
     toolHandlers.search_catalog(
       c.organizationId,
@@ -50,7 +63,9 @@ const TOOL_EXECUTORS: Record<string, ToolExecutor> = {
       c.conversationId,
       c.customer.phoneNumber,
       {
-        jerseyId: String(a.jerseyId || ''),
+        jerseyId: a.jerseyId !== undefined ? String(a.jerseyId) : undefined,
+        team: a.team !== undefined ? String(a.team) : undefined,
+        kitType: a.kitType !== undefined ? String(a.kitType) : undefined,
         idempotencyKey: `${c.conversationId}:${id}`
       }
     ),
@@ -60,7 +75,14 @@ const TOOL_EXECUTORS: Record<string, ToolExecutor> = {
       c.conversationId,
       c.customer.phoneNumber,
       {
-        ...(a as unknown as Parameters<typeof toolHandlers.create_checkout>[3]),
+        jerseyId: a.jerseyId !== undefined ? String(a.jerseyId) : undefined,
+        team: a.team !== undefined ? String(a.team) : undefined,
+        kitType: a.kitType !== undefined ? String(a.kitType) : undefined,
+        size: a.size as Parameters<typeof toolHandlers.create_checkout>[3]['size'],
+        quantity: a.quantity !== undefined ? Number(a.quantity) : undefined,
+        customName: a.customName !== undefined ? String(a.customName) : undefined,
+        customNumber: a.customNumber !== undefined ? String(a.customNumber) : undefined,
+        shippingAddress: a.shippingAddress !== undefined ? String(a.shippingAddress) : undefined,
         idempotencyKey: `${c.conversationId}:${id}`
       }
     ),

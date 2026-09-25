@@ -141,6 +141,24 @@ export class SocketService {
     if (!this.io) return;
     this.io.to(`org:${organizationId}`).emit('conversation:updated', conversation);
   }
+
+  /**
+   * Emits a conversation deleted event to remove the thread from connected CRM clients.
+   */
+  emitConversationDeleted(organizationId: string, conversationId: string): void {
+    if (!this.io) return;
+    this.io.to(`org:${organizationId}`).emit('conversation:deleted', { conversationId });
+    this.io.to(`conversation:${conversationId}`).emit('conversation:deleted', { conversationId });
+  }
+
+  /**
+   * Emits a messages cleared event to clear the active chat window on connected CRM clients.
+   */
+  emitMessagesCleared(organizationId: string, conversationId: string): void {
+    if (!this.io) return;
+    this.io.to(`conversation:${conversationId}`).emit('messages:cleared', { conversationId });
+    this.io.to(`org:${organizationId}`).emit('messages:cleared', { conversationId });
+  }
 }
 
 export const socketService = new SocketService();

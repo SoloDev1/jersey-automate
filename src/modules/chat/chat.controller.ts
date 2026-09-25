@@ -93,5 +93,39 @@ export const chatController = {
     } catch (error) {
       next(error);
     }
+  },
+
+  /**
+   * DELETE /api/v1/chat/conversations/:id/messages
+   * Clears all message history in a conversation thread.
+   */
+  async clearMessages(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const conversationId = req.params.id as string;
+      await chatService.clearChatHistory(req.organizationId, conversationId);
+      res.json({
+        success: true,
+        message: 'Chat history cleared successfully'
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+
+  /**
+   * DELETE /api/v1/chat/conversations/:id
+   * Permanently deletes a conversation and all its messages.
+   */
+  async deleteConversation(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const conversationId = req.params.id as string;
+      await chatService.deleteConversation(req.organizationId, conversationId);
+      res.json({
+        success: true,
+        message: 'Conversation deleted successfully'
+      });
+    } catch (error) {
+      next(error);
+    }
   }
 };

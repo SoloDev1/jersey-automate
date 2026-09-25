@@ -40,3 +40,9 @@ chatRouter.patch(
   validateRequest({ body: toggleAiSchema }),
   chatController.toggleAi
 );
+
+// Clear message history in a conversation thread
+chatRouter.delete('/conversations/:id/messages', chatController.clearMessages);
+
+// Permanently delete a conversation and all its messages
+chatRouter.delete('/conversations/:id', chatController.deleteConversation);

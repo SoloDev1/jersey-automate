@@ -430,5 +430,43 @@ export const chatRepository = {
       where: { id: current.id },
       data
     });
+  },
+
+  /**
+   * Deletes all messages in a conversation and clears preview/unread count.
+   */
+  async clearMessages(organizationId: string, conversationId: string): Promise<void> {
+    await prisma.$transaction([
+      prisma.message.deleteMany({
+        where: {
+          conversationId,
+          organizationId
+        }
+      }),
+      prisma.conversation.updateMany({
+        where: {
+          id: conversationId,
+          organizationId
+        },
+        data: {
+          lastMessagePreview: null,
+          unreadCount: 0,
+          updatedAt: new Date()
+        }
+      })
+    ]);
+  },
+
+  /**
+   * Permanently deletes a conversation.
+   * Cascade delete automatically cleans up all associated messages and AI logs.
+   */
+  async deleteConversation(organizationId: string, conversationId: string): Promise<void> {
+    await prisma.conversation.deleteMany({
+      where: {
+        id: conversationId,
+        organizationId
+      }
+    });
   }
 };

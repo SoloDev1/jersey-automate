@@ -3,7 +3,7 @@ import { catalogService } from '../catalog/catalog.service.js';
 import { ordersService } from '../orders/orders.service.js';
 import { paymentsService } from '../payments/payments.service.js';
 import { UpdateOrderAddressResult } from '../orders/orders.types.js';
-import { JerseySize } from '../catalog/catalog.types.js';
+import { JerseySize, JerseyRecord, JerseyInventoryRecord } from '../catalog/catalog.types.js';
 import { prisma } from '../../core/database/prisma.js';
 import { whatsappService } from '../whatsapp/whatsapp.service.js';
 import { chatRepository } from '../chat/chat.repository.js';
@@ -97,6 +97,20 @@ export interface SendProductMediaResult {
   error?: string;
 }
 
+export interface ShowProductResult {
+  found: boolean;
+  photoSent?: boolean;
+  jerseyId?: string;
+  title?: string;
+  team?: string;
+  kitType?: string;
+  price?: number;
+  currency?: string;
+  availableSizes?: JerseySize[];
+  instruction: string;
+  error?: string;
+}
+
 export interface CreateCheckoutResult {
   success: boolean;
   orderNumber?: number;
@@ -126,7 +140,39 @@ export interface CheckOrderStatusResult {
 }
 
 export const AI_TOOLS: ToolDefinition[] = [
-  // ── 1. READ TOOL: search_catalog (Side-effect free) ─────────────────────────
+  // ── 1. COMPOSITE DETERMINISTIC TOOL: show_product ──────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'show_product',
+      description: 'Resolves football kit details (price, in-stock sizes, info) and automatically sends the official high-resolution photo card to the customer on WhatsApp if requested. Use this whenever the customer asks to see a kit, view a photo, asks about available kits, or asks about prices/sizes.',
+      parameters: {
+        type: 'object',
+        properties: {
+          team: {
+            type: 'string',
+            description: 'The club or team name (e.g. "Arsenal", "Real Madrid", "Chelsea"). Retain active team from conversation.'
+          },
+          kitType: {
+            type: 'string',
+            enum: ['Home', 'Away', 'Third', 'Fourth', 'Goalkeeper'],
+            description: 'Specific kit type (e.g. "Home", "Away", "Third"). Defaults to "Home" if unspecified.'
+          },
+          jerseyId: {
+            type: 'string',
+            description: 'Optional jersey UUID if already known from prior context.'
+          },
+          sendPhoto: {
+            type: 'boolean',
+            description: 'Set to true to dispatch the high-resolution photo card directly into the customer WhatsApp chat. Defaults to true when customer asks to see, view, or get photo.'
+          }
+        },
+        required: ['team']
+      }
+    }
+  },
+
+  // ── 2. READ TOOL: search_catalog (Side-effect free) ─────────────────────────
   {
     type: 'function',
     function: {
@@ -209,10 +255,18 @@ export const AI_TOOLS: ToolDefinition[] = [
         properties: {
           jerseyId: {
             type: 'string',
-            description: 'The unique UUID of the jersey to send.'
+            description: 'The unique UUID of the jersey to send if known.'
+          },
+          team: {
+            type: 'string',
+            description: 'The club or team name (e.g. "Arsenal", "Real Madrid").'
+          },
+          kitType: {
+            type: 'string',
+            enum: ['Home', 'Away', 'Third', 'Fourth', 'Goalkeeper'],
+            description: 'Specific kit type (e.g. "Home", "Away"). Defaults to "Home".'
           }
-        },
-        required: ['jerseyId']
+        }
       }
     }
   },
@@ -228,7 +282,16 @@ export const AI_TOOLS: ToolDefinition[] = [
         properties: {
           jerseyId: {
             type: 'string',
-            description: 'The unique UUID of the jersey to purchase.'
+            description: 'The unique UUID of the jersey to purchase if known.'
+          },
+          team: {
+            type: 'string',
+            description: 'The club or team name (e.g. "Arsenal", "Real Madrid") if jerseyId is unknown.'
+          },
+          kitType: {
+            type: 'string',
+            enum: ['Home', 'Away', 'Third', 'Fourth', 'Goalkeeper'],
+            description: 'Specific kit type (e.g. "Home", "Away") if jerseyId is unknown. Defaults to "Home".'
           },
           size: {
             type: 'string',
@@ -252,7 +315,7 @@ export const AI_TOOLS: ToolDefinition[] = [
             description: 'Optional customer delivery address.'
           }
         },
-        required: ['jerseyId', 'size']
+        required: ['size']
       }
     }
   },
@@ -449,20 +512,171 @@ export const toolHandlers = {
   },
 
   /**
+   * 0. COMPOSITE DETERMINISTIC TOOL: show_product (Resolves jersey, checks sizes, and dispatches photo card)
+   */
+  async show_product(
+    organizationId: string,
+    conversationId: string,
+    customerPhone: string,
+    args: {
+      team: string;
+      kitType?: string;
+      jerseyId?: string;
+      sendPhoto?: boolean;
+      idempotencyKey?: string;
+    }
+  ): Promise<ShowProductResult> {
+    const cached = getCachedResult<ShowProductResult>(args.idempotencyKey);
+    if (cached) return cached;
+
+    try {
+      let jersey: JerseyRecord | null = null;
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+      if (args.jerseyId && uuidRegex.test(args.jerseyId)) {
+        jersey = await catalogService.getJersey(organizationId, args.jerseyId);
+      }
+
+      if (!jersey && args.team) {
+        const searchRes = await catalogService.getCatalog(organizationId, {
+          team: args.team,
+          kitType: args.kitType || 'Home',
+          limit: 1
+        });
+        jersey = searchRes.data[0] || null;
+
+        // If specific kitType not found, search general team to offer alternatives
+        if (!jersey && args.kitType) {
+          const fallbackRes = await catalogService.getCatalog(organizationId, {
+            team: args.team,
+            limit: 4
+          });
+          if (fallbackRes.data.length > 0) {
+            const availableTypes = fallbackRes.data.map((j) => j.kitType);
+            const res: ShowProductResult = {
+              found: false,
+              instruction: `We do not currently have the ${args.team} ${args.kitType} kit in stock. However, we do have the ${availableTypes.join(', ')} kit(s). Inform the customer politely and ask if they would like to see one of those.`
+            };
+            setCachedResult(args.idempotencyKey, res);
+            return res;
+          }
+        }
+      }
+
+      if (!jersey) {
+        const res: ShowProductResult = {
+          found: false,
+          instruction: `No active jersey found for "${args.team}". Tell the customer we don't carry that club right now, and suggest our top available clubs (Premier League clubs, Real Madrid, Barcelona, PSG, Bayern Munich, Dortmund, Juventus, etc.).`
+        };
+        setCachedResult(args.idempotencyKey, res);
+        return res;
+      }
+
+      const setting = await prisma.setting.findUnique({
+        where: { organizationId },
+        select: { currency: true }
+      });
+      const currency = setting?.currency || 'NGN';
+
+      const availableSizes: JerseySize[] = (jersey.inventory || [])
+        .filter((inv: JerseyInventoryRecord) => inv.quantityAvailable > 0)
+        .map((inv: JerseyInventoryRecord) => inv.size);
+
+      let photoSent = false;
+      const shouldSendPhoto = args.sendPhoto !== false;
+
+      if (shouldSendPhoto && jersey.imageUrl) {
+        try {
+          const metaMessageId = await whatsappService.sendKitCard(organizationId, {
+            toPhone: customerPhone,
+            jerseyTitle: jersey.title,
+            imageUrl: jersey.imageUrl,
+            price: jersey.basePrice,
+            currency,
+            description: jersey.description
+          });
+
+          const savedKitMessage = await chatRepository.insertMessage(organizationId, {
+            conversationId,
+            metaMessageId,
+            direction: 'outbound',
+            type: 'interactive_kit',
+            body: `⚽ ${jersey.title} - ${currency} ${jersey.basePrice}`,
+            mediaUrl: jersey.imageUrl,
+            jerseyId: jersey.id,
+            deliveryStatus: 'sent'
+          });
+
+          if (savedKitMessage) {
+            socketService.emitNewMessage(organizationId, savedKitMessage);
+            const updatedConv = await chatRepository.getConversationById(organizationId, conversationId);
+            if (updatedConv) {
+              socketService.emitConversationUpdated(organizationId, updatedConv);
+            }
+          }
+          photoSent = true;
+        } catch (mediaErr: unknown) {
+          const msg = mediaErr instanceof Error ? mediaErr.message : 'Media dispatch error';
+          console.warn(`[show_product] Photo dispatch issue for ${jersey.title}:`, msg);
+        }
+      }
+
+      const instruction = photoSent
+        ? `The official photo card has been sent above to customer on WhatsApp! State the price (${currency} ${jersey.basePrice}) and available sizes (${availableSizes.join(', ')}). Ask what size they want.`
+        : `Found ${jersey.title} (${currency} ${jersey.basePrice}). Available sizes: ${availableSizes.join(', ')}. Inform the customer.`;
+
+      const response: ShowProductResult = {
+        found: true,
+        photoSent,
+        jerseyId: jersey.id,
+        title: jersey.title,
+        team: jersey.team,
+        kitType: jersey.kitType,
+        price: jersey.basePrice,
+        currency,
+        availableSizes,
+        instruction
+      };
+
+      setCachedResult(args.idempotencyKey, response);
+      return response;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Product lookup error';
+      return {
+        found: false,
+        instruction: `Could not retrieve product details due to: ${msg}. Apologize and offer to check another club.`
+      };
+    }
+  },
+
+  /**
    * 4. MUTATING TOOL: send_product_media (Sends WhatsApp Kit Card with idempotency)
    */
   async send_product_media(
     organizationId: string,
     conversationId: string,
     customerPhone: string,
-    args: { jerseyId: string; idempotencyKey?: string }
+    args: { jerseyId?: string; team?: string; kitType?: string; idempotencyKey?: string }
   ): Promise<SendProductMediaResult> {
     // Check idempotency cache
     const cached = getCachedResult<SendProductMediaResult>(args.idempotencyKey);
     if (cached) return cached;
 
     try {
-      const jersey = await catalogService.getJersey(organizationId, args.jerseyId);
+      let jersey: JerseyRecord | null = null;
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+      if (args.jerseyId && uuidRegex.test(args.jerseyId)) {
+        jersey = await catalogService.getJersey(organizationId, args.jerseyId);
+      } else if (args.team) {
+        const found = await catalogService.getCatalog(organizationId, {
+          team: args.team,
+          kitType: args.kitType || 'Home',
+          limit: 1
+        });
+        jersey = found.data[0] || null;
+      }
+
       if (!jersey || !jersey.imageUrl) {
         return {
           success: false,
@@ -532,7 +746,9 @@ export const toolHandlers = {
     conversationId: string,
     customerPhone: string,
     args: {
-      jerseyId: string;
+      jerseyId?: string;
+      team?: string;
+      kitType?: string;
       size: JerseySize;
       quantity?: number;
       customName?: string;
@@ -548,10 +764,24 @@ export const toolHandlers = {
     const validSizes: JerseySize[] = ['XS', 'S', 'M', 'L', 'XL', 'XXL', '3XL'];
     const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-    if (!args.jerseyId || !uuidRegex.test(args.jerseyId)) {
+    let targetJerseyId = args.jerseyId;
+    if (!targetJerseyId || !uuidRegex.test(targetJerseyId)) {
+      if (args.team) {
+        const found = await catalogService.getCatalog(organizationId, {
+          team: args.team,
+          kitType: args.kitType || 'Home',
+          limit: 1
+        });
+        if (found.data[0]) {
+          targetJerseyId = found.data[0].id;
+        }
+      }
+    }
+
+    if (!targetJerseyId || !uuidRegex.test(targetJerseyId)) {
       return {
         success: false,
-        error: 'Invalid or missing jerseyId. Please provide a valid jersey UUID.'
+        error: 'Invalid or missing jerseyId. Could not identify the requested jersey for checkout.'
       };
     }
 
@@ -572,7 +802,7 @@ export const toolHandlers = {
         shippingAddress: args.shippingAddress,
         items: [
           {
-            jerseyId: args.jerseyId,
+            jerseyId: targetJerseyId,
             size: args.size,
             quantity,
             customName: args.customName?.trim() || undefined,
@@ -609,7 +839,7 @@ export const toolHandlers = {
     }
 
     try {
-      const jersey = await catalogService.getJersey(organizationId, args.jerseyId);
+      const jersey = await catalogService.getJersey(organizationId, targetJerseyId!);
 
       const formattedAmount = new Intl.NumberFormat('en-US', {
         style: 'currency',

@@ -176,5 +176,44 @@ export const chatService = {
     if (updatedConv) {
       socketService.emitConversationUpdated(organizationId, updatedConv);
     }
+  },
+
+  /**
+   * Clears all message history for a conversation while retaining the conversation thread.
+   */
+  async clearChatHistory(organizationId: string, conversationId: string): Promise<void> {
+    const conversation = await chatRepository.getConversationById(organizationId, conversationId);
+    if (!conversation) {
+      const notFoundErr = Object.assign(new Error(`Conversation ${conversationId} not found`), {
+        statusCode: 404,
+        code: 'CONVERSATION_NOT_FOUND'
+      });
+      throw notFoundErr;
+    }
+
+    await chatRepository.clearMessages(organizationId, conversationId);
+    socketService.emitMessagesCleared(organizationId, conversationId);
+
+    const updatedConv = await chatRepository.getConversationById(organizationId, conversationId);
+    if (updatedConv) {
+      socketService.emitConversationUpdated(organizationId, updatedConv);
+    }
+  },
+
+  /**
+   * Permanently deletes a conversation and all its messages.
+   */
+  async deleteConversation(organizationId: string, conversationId: string): Promise<void> {
+    const conversation = await chatRepository.getConversationById(organizationId, conversationId);
+    if (!conversation) {
+      const notFoundErr = Object.assign(new Error(`Conversation ${conversationId} not found`), {
+        statusCode: 404,
+        code: 'CONVERSATION_NOT_FOUND'
+      });
+      throw notFoundErr;
+    }
+
+    await chatRepository.deleteConversation(organizationId, conversationId);
+    socketService.emitConversationDeleted(organizationId, conversationId);
   }
 };
