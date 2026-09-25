@@ -21,6 +21,7 @@ export interface ConversationState {
   size?: string;
   quantity?: number;
   orderId?: string;
+  orderNumber?: number;
   updatedAt: number;
 }
 

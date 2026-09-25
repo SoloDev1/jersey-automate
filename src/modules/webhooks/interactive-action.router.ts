@@ -2,8 +2,6 @@ import { whatsappActions, WhatsAppAction } from '../whatsapp/whatsapp-actions.js
 import { whatsappCommerceService } from '../whatsapp/whatsapp-commerce.service.js';
 import { whatsappService } from '../whatsapp/whatsapp.service.js';
 import { catalogService } from '../catalog/catalog.service.js';
-import { ordersService } from '../orders/orders.service.js';
-import { paymentsService } from '../payments/payments.service.js';
 import { chatService } from '../chat/chat.service.js';
 import { conversationStateService } from '../chat/conversation-state.service.js';
 
@@ -115,74 +113,12 @@ export const interactiveActionRouter = {
         }
 
         case 'buy': {
-          // 1. Verify jersey and real-time inventory
-          const jersey = await catalogService.getJersey(organizationId, action.jerseyId);
-          if (!jersey || !jersey.isActive) {
-            await whatsappService.sendTextMessage(organizationId, {
-              toPhone,
-              body: `😔 Sorry, this jersey is no longer active in our store. Please choose another kit.`
-            });
-            return true;
-          }
-
-          const stockCheck = await catalogService.isSizeAvailable(
-            organizationId,
-            action.jerseyId,
-            action.size,
-            1
-          );
-
-          if (!stockCheck.available) {
-            // Inventory race condition: item sold out -> offer remaining in-stock sizes
-            await whatsappCommerceService.sendSizePicker(organizationId, conversationId, {
-              toPhone,
-              jersey
-            });
-            return true;
-          }
-
-          // 2. Atomic reservation & order hold (15-minute hold)
-          const order = await ordersService.createOrder(organizationId, {
+          await whatsappCommerceService.executeCheckout(organizationId, conversationId, {
             customerPhone: toPhone,
-            items: [
-              {
-                jerseyId: action.jerseyId,
-                size: action.size,
-                quantity: 1
-              }
-            ]
-          });
-
-          // 3. Initialize secure Paystack transaction
-          const customerEmail = `${toPhone.replace(/\+/g, '')}@whatsapp.customer`;
-          const paymentInit = await paymentsService.initializePayment(
-            organizationId,
-            order.id,
-            customerEmail
-          );
-
-          // 4. Update conversation state (active commerce fields only)
-          await conversationStateService.updateState(organizationId, conversationId, {
-            stage: 'awaiting_payment',
-            jerseyId: jersey.id,
-            team: jersey.team,
-            kitType: jersey.kitType,
+            jerseyId: action.jerseyId,
             size: action.size,
-            quantity: 1,
-            orderId: order.id
+            quantity: 1
           });
-
-          // 5. Deliver interactive Paystack CTA card
-          await whatsappCommerceService.sendCheckoutCard(organizationId, conversationId, {
-            toPhone,
-            orderNumber: order.orderNumber,
-            jerseyTitle: jersey.title,
-            size: action.size,
-            totalAmount: order.totalAmount,
-            currency: order.currency,
-            paymentUrl: paymentInit.authorizationUrl
-          });
-
           return true;
         }
 

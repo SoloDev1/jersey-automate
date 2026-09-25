@@ -435,32 +435,42 @@ export const webhooksService = {
                     body: '🔄 Your shopping session has been reset. Which football club or jersey are you looking for today? ⚽'
                   });
                   actionHandled = true;
-                } else if (state.stage === 'selecting_size' && state.jerseyId) {
+                } else {
                   const matchedSize = extractSizeFromText(trimmed);
-                  if (matchedSize) {
-                    actionHandled = true;
-                    await interactiveActionRouter.dispatch(
-                      whatsappActions.buildBuy(state.jerseyId, matchedSize),
-                      {
-                        organizationId,
+                  let targetJerseyId = state.jerseyId;
+
+                  // If state has no jerseyId, fall back to the most recent kit card sent in this thread
+                  if (!targetJerseyId && matchedSize) {
+                    const lastKitMsg = await prisma.message.findFirst({
+                      where: {
                         conversationId: conversation.id,
-                        customer
-                      }
-                    );
+                        direction: 'outbound',
+                        type: 'interactive_kit',
+                        jerseyId: { not: null }
+                      },
+                      orderBy: { createdAt: 'desc' },
+                      select: { jerseyId: true }
+                    });
+                    if (lastKitMsg?.jerseyId) {
+                      targetJerseyId = lastKitMsg.jerseyId;
+                    }
                   }
-                } else if (state.stage === 'viewing_product' && state.jerseyId) {
-                  const matchedSize = extractSizeFromText(trimmed);
-                  if (matchedSize) {
+
+                  if (matchedSize && targetJerseyId) {
                     actionHandled = true;
                     await interactiveActionRouter.dispatch(
-                      whatsappActions.buildBuy(state.jerseyId, matchedSize),
+                      whatsappActions.buildBuy(targetJerseyId, matchedSize),
                       {
                         organizationId,
                         conversationId: conversation.id,
                         customer
                       }
                     );
-                  } else if (/^(buy|order|purchase|checkout|sizes?|pick size|choose size)$/i.test(trimmed)) {
+                  } else if (
+                    state.stage === 'viewing_product' &&
+                    state.jerseyId &&
+                    /^(buy|order|purchase|checkout|sizes?|pick size|choose size)$/i.test(trimmed)
+                  ) {
                     actionHandled = true;
                     await interactiveActionRouter.dispatch(
                       whatsappActions.buildSizes(state.jerseyId),

@@ -296,20 +296,7 @@ export const ordersRepository = {
 
         // Insert order items, stock reservations, and inventory movements
         const tItemsStart = performance.now();
-        const createdItems: Array<{
-          id: string;
-          orderId: string;
-          jerseyId: string;
-          size: JerseySize;
-          quantity: number;
-          unitPrice: number;
-          customName: string | null;
-          customNumber: string | null;
-          printingFee: number;
-          createdAt: string;
-          jerseyTitle?: string;
-          jerseyImage?: string | null;
-        }> = [];
+        const createdItems: OrderItemRecord[] = [];
 
         for (const item of preparedItems) {
           const orderItem = await tx.orderItem.create({
@@ -379,7 +366,7 @@ export const ordersRepository = {
             printingFee: item.printingFee,
             createdAt: orderItem.createdAt.toISOString(),
             jerseyTitle: jersey?.title,
-            jerseyImage: jersey?.imageUrl
+            jerseyImage: jersey?.imageUrl ? jersey.imageUrl : undefined
           });
         }
         const tItemsEnd = performance.now();

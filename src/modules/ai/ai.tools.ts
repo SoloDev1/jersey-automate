@@ -764,118 +764,36 @@ export const toolHandlers = {
     const rawQty = Number(args.quantity);
     const quantity = !isNaN(rawQty) && rawQty >= 1 && rawQty <= 10 ? Math.floor(rawQty) : 1;
 
-    let order;
     try {
-      order = await ordersService.createOrder(organizationId, {
+      const checkoutResult = await whatsappCommerceService.executeCheckout(organizationId, conversationId, {
         customerPhone,
-        shippingAddress: args.shippingAddress,
-        items: [
-          {
-            jerseyId: targetJerseyId,
-            size: args.size,
-            quantity,
-            customName: args.customName?.trim() || undefined,
-            customNumber: args.customNumber?.trim() || undefined
-          }
-        ]
+        jerseyId: targetJerseyId,
+        size: args.size,
+        quantity,
+        customName: args.customName?.trim() || undefined,
+        customNumber: args.customNumber?.trim() || undefined,
+        shippingAddress: args.shippingAddress
       });
-    } catch (orderError: unknown) {
-      const msg = orderError instanceof Error ? orderError.message : 'Failed to create order.';
+
+      const response: CreateCheckoutResult = {
+        success: true,
+        orderNumber: checkoutResult.order.orderNumber,
+        totalAmount: checkoutResult.order.totalAmount,
+        currency: checkoutResult.order.currency,
+        checkoutUrl: checkoutResult.paymentUrl,
+        checkoutCardSentAbove: true,
+        instruction:
+          'The order confirmation and Paystack payment link have been delivered directly to the customer above! Remind them their kit is reserved for 15 minutes.'
+      };
+
+      setCachedResult(args.idempotencyKey, response);
+      return response;
+    } catch (checkoutErr: unknown) {
+      const msg = checkoutErr instanceof Error ? checkoutErr.message : 'Checkout failed';
       return {
         success: false,
         error: msg
       };
-    }
-
-    let paymentInit: { authorizationUrl: string; accessCode: string; reference: string };
-    try {
-      paymentInit = await paymentsService.initializePayment(
-        organizationId,
-        order.id,
-        `${customerPhone.replace(/\+/g, '')}@whatsapp.customer`
-      );
-    } catch (paystackError: unknown) {
-      const msg = paystackError instanceof Error ? paystackError.message : 'Payment error';
-      console.error(
-        `[create_checkout] Paystack initialization failed for order ${order.id}. Releasing reserved stock:`,
-        msg
-      );
-      await ordersService.cancelOrderAndReleaseStock(organizationId, order.id);
-      return {
-        success: false,
-        error: `Payment initialization temporarily unavailable: ${msg}`
-      };
-    }
-
-    try {
-      const jersey = await catalogService.getJersey(organizationId, targetJerseyId!);
-
-      const formattedAmount = new Intl.NumberFormat('en-US', {
-        style: 'currency',
-        currency: order.currency
-      }).format(order.totalAmount);
-
-      const customPrint = [args.customName, args.customNumber ? `#${args.customNumber}` : '']
-        .filter(Boolean)
-        .join(' ');
-
-      const checkoutCard = [
-        `🧾 *ORDER CONFIRMATION & CHECKOUT*`,
-        ``,
-        `Your kit has been held for *15 minutes* ⏳`,
-        ``,
-        `⚽ *Item:* ${jersey?.title || 'Football Kit'}`,
-        `📏 *Size:* *${args.size}* (Qty: ${quantity})`,
-        customPrint ? `🔢 *Custom Print:* ${customPrint}` : '',
-        args.shippingAddress ? `🚚 *Delivery To:* ${args.shippingAddress}` : '',
-        ``,
-        `─────────────────────────`,
-        `💰 *Total Amount:* *${formattedAmount}*`,
-        `─────────────────────────`,
-        ``,
-        `Tap the secure Paystack link below to complete payment:`,
-        `👉 ${paymentInit.authorizationUrl}`,
-        ``,
-        `🔒 _Supports Debit Cards, Bank Transfer & USSD._`
-      ]
-        .filter(Boolean)
-        .join('\n');
-
-      await whatsappCommerceService.sendCheckoutCard(organizationId, conversationId, {
-        toPhone: customerPhone,
-        orderNumber: order.orderNumber,
-        jerseyTitle: jersey?.title || 'Football Kit',
-        size: args.size,
-        totalAmount: order.totalAmount,
-        currency: order.currency,
-        paymentUrl: paymentInit.authorizationUrl
-      });
-
-      const response: CreateCheckoutResult = {
-        success: true,
-        orderNumber: order.orderNumber,
-        totalAmount: order.totalAmount,
-        currency: order.currency,
-        checkoutUrl: paymentInit.authorizationUrl,
-        checkoutCardSentAbove: true,
-        instruction: 'The order confirmation and Paystack payment link have been delivered directly to the customer above! Remind them their kit is reserved for 15 minutes.'
-      };
-
-      setCachedResult(args.idempotencyKey, response);
-      return response;
-    } catch (postOrderError: unknown) {
-      const msg = postOrderError instanceof Error ? postOrderError.message : 'Notification error';
-      console.warn(`[create_checkout] Non-fatal notification error:`, msg);
-      const response: CreateCheckoutResult = {
-        success: true,
-        orderNumber: order.orderNumber,
-        totalAmount: order.totalAmount,
-        currency: order.currency,
-        checkoutUrl: paymentInit.authorizationUrl,
-        instruction: `Order #${order.orderNumber} created. Paystack link: ${paymentInit.authorizationUrl}`
-      };
-      setCachedResult(args.idempotencyKey, response);
-      return response;
     }
   },
 
