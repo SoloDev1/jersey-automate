@@ -229,114 +229,125 @@ export const paymentsService = {
     }
 
     // 5. Atomic PostgreSQL Interactive Transaction: Stock Finalization + Order Update + Payment Creation
-    const paymentRecord = await prisma.$transaction(async (tx) => {
-      // Internal idempotency check inside transaction
-      const duplicateCheck = await tx.payment.findUnique({
-        where: { paystackReference: reference }
-      });
-      if (duplicateCheck) {
-        return duplicateCheck;
-      }
-
-      // Fetch active stock reservations for this order
-      const activeReservations = await tx.stockReservation.findMany({
-        where: {
-          organizationId: order.organizationId,
-          orderId: order.id,
-          status: 'active'
-        }
-      });
-
-      // Finalize stock for each active reservation: transition from reserved -> sold
-      for (const res of activeReservations) {
-        const lockedRows = await tx.$queryRaw<LockedInventoryRow[]>`
-          SELECT id, quantity_on_hand, quantity_reserved
-          FROM jersey_inventory
-          WHERE organization_id = ${order.organizationId}
-            AND jersey_id = ${res.jerseyId}::uuid
-            AND size = ${res.size}
-          FOR UPDATE;
-        `;
-
-        if (lockedRows && lockedRows.length > 0) {
-          const inv = lockedRows[0];
-          const newOnHand = Math.max(0, inv.quantity_on_hand - res.quantity);
-          const newReserved = Math.max(0, inv.quantity_reserved - res.quantity);
-
-          await tx.jerseyInventory.update({
-            where: { id: inv.id },
-            data: {
-              quantityOnHand: newOnHand,
-              quantityReserved: newReserved
-            }
-          });
-
-          // Immutable audit record of sold inventory
-          await tx.inventoryMovement.create({
-            data: {
-              organizationId: order.organizationId,
-              jerseyId: res.jerseyId,
-              size: res.size,
-              movementType: 'sold',
-              quantityDelta: -res.quantity,
-              quantityOnHandBefore: inv.quantity_on_hand,
-              quantityOnHandAfter: newOnHand,
-              quantityReservedBefore: inv.quantity_reserved,
-              quantityReservedAfter: newReserved,
-              orderId: order.id,
-              reservationId: res.id,
-              actor: 'paystack_webhook',
-              reason: `Order #${order.orderNumber} payment confirmed`
-            }
-          });
+    const tPaymentTxStart = performance.now();
+    const paymentRecord = await prisma.$transaction(
+      async (tx) => {
+        // Internal idempotency check inside transaction
+        const duplicateCheck = await tx.payment.findUnique({
+          where: { paystackReference: reference }
+        });
+        if (duplicateCheck) {
+          return duplicateCheck;
         }
 
-        // Mark reservation finalized
-        await tx.stockReservation.update({
-          where: { id: res.id },
-          data: {
-            status: 'finalized',
-            finalizedAt: new Date()
+        // Fetch active stock reservations for this order
+        const activeReservations = await tx.stockReservation.findMany({
+          where: {
+            organizationId: order.organizationId,
+            orderId: order.id,
+            status: 'active'
           }
         });
+
+        // Finalize stock for each active reservation: transition from reserved -> sold
+        for (const res of activeReservations) {
+          const lockedRows = await tx.$queryRaw<LockedInventoryRow[]>`
+            SELECT id, quantity_on_hand, quantity_reserved
+            FROM jersey_inventory
+            WHERE organization_id = ${order.organizationId}
+              AND jersey_id = ${res.jerseyId}::uuid
+              AND size = ${res.size}
+            FOR UPDATE;
+          `;
+
+          if (lockedRows && lockedRows.length > 0) {
+            const inv = lockedRows[0];
+            const newOnHand = Math.max(0, inv.quantity_on_hand - res.quantity);
+            const newReserved = Math.max(0, inv.quantity_reserved - res.quantity);
+
+            await tx.jerseyInventory.update({
+              where: { id: inv.id },
+              data: {
+                quantityOnHand: newOnHand,
+                quantityReserved: newReserved
+              }
+            });
+
+            // Immutable audit record of sold inventory
+            await tx.inventoryMovement.create({
+              data: {
+                organizationId: order.organizationId,
+                jerseyId: res.jerseyId,
+                size: res.size,
+                movementType: 'sold',
+                quantityDelta: -res.quantity,
+                quantityOnHandBefore: inv.quantity_on_hand,
+                quantityOnHandAfter: newOnHand,
+                quantityReservedBefore: inv.quantity_reserved,
+                quantityReservedAfter: newReserved,
+                orderId: order.id,
+                reservationId: res.id,
+                actor: 'paystack_webhook',
+                reason: `Order #${order.orderNumber} payment confirmed`
+              }
+            });
+          }
+
+          // Mark reservation finalized
+          await tx.stockReservation.update({
+            where: { id: res.id },
+            data: {
+              status: 'finalized',
+              finalizedAt: new Date()
+            }
+          });
+        }
+
+        // Update order to paid & printing
+        await tx.order.update({
+          where: { id: order.id },
+          data: {
+            paymentStatus: 'paid',
+            fulfillmentStatus: 'printing'
+          }
+        });
+
+        // Increment customer lifetime metrics atomically
+        await tx.customer.update({
+          where: { id: order.customerId },
+          data: {
+            totalOrders: { increment: 1 },
+            totalSpend: { increment: order.totalAmount },
+            lastContactAt: new Date()
+          }
+        });
+
+        // Insert payment record
+        const createdPayment = await tx.payment.create({
+          data: {
+            organizationId: order.organizationId,
+            orderId: order.id,
+            paystackReference: reference,
+            amountPaid: Number((data.amount / 100).toFixed(2)),
+            currency: data.currency,
+            channel: data.channel || 'unknown',
+            status: 'success',
+            paystackResponse: data as unknown as Prisma.InputJsonValue,
+            verifiedAt: data.paid_at ? new Date(data.paid_at) : new Date()
+          }
+        });
+
+        return createdPayment;
+      },
+      {
+        maxWait: 10000,
+        timeout: 20000
       }
+    );
 
-      // Update order to paid & printing
-      await tx.order.update({
-        where: { id: order.id },
-        data: {
-          paymentStatus: 'paid',
-          fulfillmentStatus: 'printing'
-        }
-      });
-
-      // Increment customer lifetime metrics atomically
-      await tx.customer.update({
-        where: { id: order.customerId },
-        data: {
-          totalOrders: { increment: 1 },
-          totalSpend: { increment: order.totalAmount },
-          lastContactAt: new Date()
-        }
-      });
-
-      // Insert payment record
-      const createdPayment = await tx.payment.create({
-        data: {
-          organizationId: order.organizationId,
-          orderId: order.id,
-          paystackReference: reference,
-          amountPaid: Number((data.amount / 100).toFixed(2)),
-          currency: data.currency,
-          channel: data.channel || 'unknown',
-          status: 'success',
-          paystackResponse: data as unknown as Prisma.InputJsonValue,
-          verifiedAt: data.paid_at ? new Date(data.paid_at) : new Date()
-        }
-      });
-
-      return createdPayment;
-    });
+    console.log(
+      `[processVerifiedPayment] Stock finalization & payment record committed in ${(performance.now() - tPaymentTxStart).toFixed(1)}ms`
+    );
 
     // 6. Asynchronous WhatsApp Receipt Dispatch (Safely Outside DB Transaction)
     if (order.customerPhone) {

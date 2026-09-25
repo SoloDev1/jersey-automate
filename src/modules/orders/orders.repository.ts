@@ -145,140 +145,230 @@ export const ordersRepository = {
     dto: CreateOrderDTO,
     ttlMinutes = 15
   ): Promise<OrderRecord> {
-    return prisma.$transaction(async (tx) => {
-      // 1. Resolve or create customer atomically
-      const normalizedPhone = formatPhoneNumber(dto.customerPhone);
-      const customer = await tx.customer.upsert({
-        where: {
-          uq_customer_org_phone: {
-            organizationId,
-            phoneNumber: normalizedPhone
-          }
-        },
-        update: dto.customerName ? { displayName: dto.customerName } : {},
-        create: {
+    const t0 = performance.now();
+
+    // 1. Resolve or create customer atomically OUTSIDE the lock transaction
+    const tCustomerStart = performance.now();
+    const normalizedPhone = formatPhoneNumber(dto.customerPhone);
+    const customer = await prisma.customer.upsert({
+      where: {
+        uq_customer_org_phone: {
           organizationId,
-          phoneNumber: normalizedPhone,
-          displayName: dto.customerName || null
-        },
-        select: { id: true }
-      });
-
-      // 2. Fetch store settings
-      const settings = await tx.setting.findUnique({
-        where: { organizationId }
-      });
-      const currency = settings?.currency || 'NGN';
-      const shippingFee = Number(settings?.defaultShippingFee ?? 2000);
-      const printingFeePerItem = Number(settings?.customPrintingFee ?? 3000);
-
-      // 3. Fetch active jerseys to verify pricing and availability
-      const jerseyIds = Array.from(new Set(dto.items.map((i) => i.jerseyId)));
-      const jerseys = await tx.jersey.findMany({
-        where: {
-          id: { in: jerseyIds },
-          organizationId
-        },
-        select: {
-          id: true,
-          title: true,
-          basePrice: true,
-          isActive: true
+          phoneNumber: normalizedPhone
         }
-      });
+      },
+      update: dto.customerName ? { displayName: dto.customerName } : {},
+      create: {
+        organizationId,
+        phoneNumber: normalizedPhone,
+        displayName: dto.customerName || null
+      },
+      select: { id: true, phoneNumber: true, displayName: true }
+    });
+    const tCustomerEnd = performance.now();
 
-      const jerseyMap = new Map(jerseys.map((j) => [j.id, j]));
+    // 2. Fetch store settings OUTSIDE the lock transaction
+    const tSettingsStart = performance.now();
+    const settings = await prisma.setting.findUnique({
+      where: { organizationId }
+    });
+    const currency = settings?.currency || 'NGN';
+    const shippingFee = Number(settings?.defaultShippingFee ?? 2000);
+    const printingFeePerItem = Number(settings?.customPrintingFee ?? 3000);
+    const tSettingsEnd = performance.now();
 
-      // 4. Calculate pricing and validate line items
-      let subtotal = 0;
-      const preparedItems = dto.items.map((item) => {
-        const jersey = jerseyMap.get(item.jerseyId);
-        if (!jersey || !jersey.isActive) {
-          throw new Error(`Jersey ${item.jerseyId} is not available for purchase`);
-        }
+    // 3. Fetch active jerseys to verify pricing and availability OUTSIDE the lock transaction
+    const tCatalogStart = performance.now();
+    const jerseyIds = Array.from(new Set(dto.items.map((i) => i.jerseyId)));
+    const jerseys = await prisma.jersey.findMany({
+      where: {
+        id: { in: jerseyIds },
+        organizationId
+      },
+      select: {
+        id: true,
+        title: true,
+        imageUrl: true,
+        basePrice: true,
+        isActive: true
+      }
+    });
 
-        const unitPrice = Number(jersey.basePrice);
-        const hasCustomization = Boolean(item.customName || item.customNumber);
-        const printingFee = hasCustomization ? printingFeePerItem : 0;
-        const itemTotal = (unitPrice + printingFee) * item.quantity;
-        subtotal += itemTotal;
+    const jerseyMap = new Map(jerseys.map((j) => [j.id, j]));
+    const tCatalogEnd = performance.now();
 
-        return {
-          jerseyId: item.jerseyId,
-          jerseyTitle: jersey.title,
-          size: item.size,
-          quantity: item.quantity,
-          unitPrice,
-          customName: item.customName || null,
-          customNumber: item.customNumber || null,
-          printingFee
-        };
-      });
-
-      const totalAmount = subtotal + shippingFee;
-      const reservationExpiresAt = new Date(Date.now() + ttlMinutes * 60 * 1000);
-
-      // 5. Lock inventory rows using pessimistic row-locking (FOR UPDATE)
-      // Sort items to guarantee consistent lock acquisition order and prevent deadlocks
-      const sortedItems = [...preparedItems].sort((a, b) =>
-        a.jerseyId === b.jerseyId ? a.size.localeCompare(b.size) : a.jerseyId.localeCompare(b.jerseyId)
-      );
-
-      const lockedInventories = new Map<string, LockedStockRow>();
-
-      for (const item of sortedItems) {
-        const key = `${item.jerseyId}:${item.size}`;
-        if (!lockedInventories.has(key)) {
-          const lockedRows = await tx.$queryRaw<LockedStockRow[]>`
-            SELECT id, quantity_on_hand, quantity_reserved
-            FROM jersey_inventory
-            WHERE organization_id = ${organizationId}
-              AND jersey_id = ${item.jerseyId}::uuid
-              AND size = ${item.size}
-            FOR UPDATE;
-          `;
-
-          if (!lockedRows || lockedRows.length === 0) {
-            throw new Error(`Inventory row not found for jersey "${item.jerseyTitle}" (${item.size})`);
-          }
-
-          lockedInventories.set(key, { ...lockedRows[0] });
-        }
-
-        const currentInv = lockedInventories.get(key)!;
-        const available = currentInv.quantity_on_hand - currentInv.quantity_reserved;
-
-        if (available < item.quantity) {
-          throw new Error(
-            `Insufficient stock for "${item.jerseyTitle}" (Size ${item.size}). Requested: ${item.quantity}, Available: ${available}`
-          );
-        }
-
-        // Increment reserved quantity in our local tracker for multi-item validation
-        currentInv.quantity_reserved += item.quantity;
+    // 4. Calculate pricing and validate line items
+    let subtotal = 0;
+    const preparedItems = dto.items.map((item) => {
+      const jersey = jerseyMap.get(item.jerseyId);
+      if (!jersey || !jersey.isActive) {
+        throw new Error(`Jersey ${item.jerseyId} is not available for purchase`);
       }
 
-      // 6. Create pending order row
-      const order = await tx.order.create({
-        data: {
-          organizationId,
-          customerId: customer.id,
-          subtotal,
-          shippingFee,
-          totalAmount,
-          currency,
-          paymentStatus: 'pending',
-          fulfillmentStatus: 'unfulfilled',
-          reservationExpiresAt,
-          shippingAddress: dto.shippingAddress || null,
-          notes: dto.notes || null
-        }
-      });
+      const unitPrice = Number(jersey.basePrice);
+      const hasCustomization = Boolean(item.customName || item.customNumber);
+      const printingFee = hasCustomization ? printingFeePerItem : 0;
+      const itemTotal = (unitPrice + printingFee) * item.quantity;
+      subtotal += itemTotal;
 
-      // 7. Insert order items, stock reservations, and inventory movements
-      for (const item of preparedItems) {
-        const orderItem = await tx.orderItem.create({
+      return {
+        jerseyId: item.jerseyId,
+        jerseyTitle: jersey.title,
+        size: item.size,
+        quantity: item.quantity,
+        unitPrice,
+        customName: item.customName || null,
+        customNumber: item.customNumber || null,
+        printingFee
+      };
+    });
+
+    const totalAmount = subtotal + shippingFee;
+    const reservationExpiresAt = new Date(Date.now() + ttlMinutes * 60 * 1000);
+
+    console.log(
+      `[createOrderWithReservation] Pre-flight timings: customer=${(tCustomerEnd - tCustomerStart).toFixed(1)}ms, settings=${(tSettingsEnd - tSettingsStart).toFixed(1)}ms, catalog=${(tCatalogEnd - tCatalogStart).toFixed(1)}ms. Total pre-flight: ${(performance.now() - t0).toFixed(1)}ms. Starting atomic transaction...`
+    );
+
+    // 5. Atomic Interactive Transaction strictly for inventory locking and order creation
+    const tTxStart = performance.now();
+    const orderRecord = await prisma.$transaction(
+      async (tx) => {
+        // Sort items to guarantee consistent lock acquisition order and prevent deadlocks
+        const sortedItems = [...preparedItems].sort((a, b) =>
+          a.jerseyId === b.jerseyId ? a.size.localeCompare(b.size) : a.jerseyId.localeCompare(b.jerseyId)
+        );
+
+        const lockedInventories = new Map<string, LockedStockRow>();
+
+        const tLockStart = performance.now();
+        for (const item of sortedItems) {
+          const key = `${item.jerseyId}:${item.size}`;
+          if (!lockedInventories.has(key)) {
+            const lockedRows = await tx.$queryRaw<LockedStockRow[]>`
+              SELECT id, quantity_on_hand, quantity_reserved
+              FROM jersey_inventory
+              WHERE organization_id = ${organizationId}
+                AND jersey_id = ${item.jerseyId}::uuid
+                AND size = ${item.size}
+              FOR UPDATE;
+            `;
+
+            if (!lockedRows || lockedRows.length === 0) {
+              throw new Error(`Inventory row not found for jersey "${item.jerseyTitle}" (${item.size})`);
+            }
+
+            lockedInventories.set(key, { ...lockedRows[0] });
+          }
+
+          const currentInv = lockedInventories.get(key)!;
+          const available = currentInv.quantity_on_hand - currentInv.quantity_reserved;
+
+          if (available < item.quantity) {
+            throw new Error(
+              `Insufficient stock for "${item.jerseyTitle}" (Size ${item.size}). Requested: ${item.quantity}, Available: ${available}`
+            );
+          }
+
+          // Increment reserved quantity in our local tracker for multi-item validation
+          currentInv.quantity_reserved += item.quantity;
+        }
+        const tLockEnd = performance.now();
+
+        // Create pending order row
+        const tOrderCreateStart = performance.now();
+        const order = await tx.order.create({
           data: {
+            organizationId,
+            customerId: customer.id,
+            subtotal,
+            shippingFee,
+            totalAmount,
+            currency,
+            paymentStatus: 'pending',
+            fulfillmentStatus: 'unfulfilled',
+            reservationExpiresAt,
+            shippingAddress: dto.shippingAddress || null,
+            notes: dto.notes || null
+          }
+        });
+        const tOrderCreateEnd = performance.now();
+
+        // Insert order items, stock reservations, and inventory movements
+        const tItemsStart = performance.now();
+        const createdItems: Array<{
+          id: string;
+          orderId: string;
+          jerseyId: string;
+          size: JerseySize;
+          quantity: number;
+          unitPrice: number;
+          customName: string | null;
+          customNumber: string | null;
+          printingFee: number;
+          createdAt: string;
+          jerseyTitle?: string;
+          jerseyImage?: string | null;
+        }> = [];
+
+        for (const item of preparedItems) {
+          const orderItem = await tx.orderItem.create({
+            data: {
+              orderId: order.id,
+              jerseyId: item.jerseyId,
+              size: item.size,
+              quantity: item.quantity,
+              unitPrice: item.unitPrice,
+              customName: item.customName,
+              customNumber: item.customNumber,
+              printingFee: item.printingFee
+            }
+          });
+
+          const reservation = await tx.stockReservation.create({
+            data: {
+              organizationId,
+              orderId: order.id,
+              orderItemId: orderItem.id,
+              jerseyId: item.jerseyId,
+              size: item.size,
+              quantity: item.quantity,
+              status: 'active',
+              expiresAt: reservationExpiresAt
+            }
+          });
+
+          const key = `${item.jerseyId}:${item.size}`;
+          const inv = lockedInventories.get(key)!;
+
+          // Apply reservation increment to DB
+          await tx.jerseyInventory.update({
+            where: { id: inv.id },
+            data: { quantityReserved: { increment: item.quantity } }
+          });
+
+          // Audit inventory hold in movement log
+          await tx.inventoryMovement.create({
+            data: {
+              organizationId,
+              jerseyId: item.jerseyId,
+              size: item.size,
+              movementType: 'reserve',
+              quantityDelta: item.quantity,
+              quantityOnHandBefore: inv.quantity_on_hand,
+              quantityOnHandAfter: inv.quantity_on_hand,
+              quantityReservedBefore: inv.quantity_reserved - item.quantity,
+              quantityReservedAfter: inv.quantity_reserved,
+              orderId: order.id,
+              reservationId: reservation.id,
+              actor: 'orders_service',
+              reason: `Order #${order.orderNumber} stock reservation`
+            }
+          });
+
+          const jersey = jerseyMap.get(item.jerseyId);
+          createdItems.push({
+            id: orderItem.id,
             orderId: order.id,
             jerseyId: item.jerseyId,
             size: item.size,
@@ -286,84 +376,58 @@ export const ordersRepository = {
             unitPrice: item.unitPrice,
             customName: item.customName,
             customNumber: item.customNumber,
-            printingFee: item.printingFee
-          }
-        });
-
-        const reservation = await tx.stockReservation.create({
-          data: {
-            organizationId,
-            orderId: order.id,
-            orderItemId: orderItem.id,
-            jerseyId: item.jerseyId,
-            size: item.size,
-            quantity: item.quantity,
-            status: 'active',
-            expiresAt: reservationExpiresAt
-          }
-        });
-
-        const key = `${item.jerseyId}:${item.size}`;
-        const inv = lockedInventories.get(key)!;
-
-        // Apply reservation increment to DB
-        await tx.jerseyInventory.update({
-          where: { id: inv.id },
-          data: { quantityReserved: { increment: item.quantity } }
-        });
-
-        // Audit inventory hold in movement log
-        await tx.inventoryMovement.create({
-          data: {
-            organizationId,
-            jerseyId: item.jerseyId,
-            size: item.size,
-            movementType: 'reserve',
-            quantityDelta: item.quantity,
-            quantityOnHandBefore: inv.quantity_on_hand,
-            quantityOnHandAfter: inv.quantity_on_hand,
-            quantityReservedBefore: inv.quantity_reserved - item.quantity,
-            quantityReservedAfter: inv.quantity_reserved,
-            orderId: order.id,
-            reservationId: reservation.id,
-            actor: 'orders_service',
-            reason: `Order #${order.orderNumber} stock reservation`
-          }
-        });
-      }
-
-      // 8. Reload full created order with relations
-      const fullOrder = await tx.order.findFirst({
-        where: {
-          id: order.id,
-          organizationId
-        },
-        include: {
-          customer: {
-            select: {
-              phoneNumber: true,
-              displayName: true
-            }
-          },
-          orderItems: {
-            include: {
-              jersey: {
-                select: {
-                  title: true,
-                  imageUrl: true
-                }
-              }
-            }
-          }
+            printingFee: item.printingFee,
+            createdAt: orderItem.createdAt.toISOString(),
+            jerseyTitle: jersey?.title,
+            jerseyImage: jersey?.imageUrl
+          });
         }
-      });
+        const tItemsEnd = performance.now();
 
-      if (!fullOrder) {
-        throw new Error(`Order ${order.id} was created but could not be reloaded`);
+        console.log(
+          `[createOrderWithReservation] Transaction timings: lock=${(tLockEnd - tLockStart).toFixed(1)}ms, orderCreate=${(tOrderCreateEnd - tOrderCreateStart).toFixed(1)}ms, itemsReservation=${(tItemsEnd - tItemsStart).toFixed(1)}ms`
+        );
+
+        // Assemble OrderRecord directly without redundant reload query
+        const record: OrderRecord = {
+          id: order.id,
+          organizationId: order.organizationId,
+          orderNumber: order.orderNumber,
+          customerId: order.customerId,
+          subtotal: Number(order.subtotal),
+          shippingFee: Number(order.shippingFee),
+          totalAmount: Number(order.totalAmount),
+          currency: order.currency,
+          paymentStatus: order.paymentStatus as PaymentStatus,
+          fulfillmentStatus: order.fulfillmentStatus as FulfillmentStatus,
+          paystackReference: order.paystackReference,
+          paystackAccessCode: order.paystackAccessCode,
+          paymentUrl: order.paymentUrl,
+          reservationExpiresAt: order.reservationExpiresAt ? order.reservationExpiresAt.toISOString() : null,
+          shippingAddress: order.shippingAddress,
+          shippingTrackingNumber: order.shippingTrackingNumber,
+          notes: order.notes,
+          createdAt: order.createdAt.toISOString(),
+          updatedAt: order.updatedAt.toISOString(),
+          customerPhone: customer.phoneNumber,
+          customerName: customer.displayName ?? undefined,
+          items: createdItems
+        };
+
+        return record;
+      },
+      {
+        maxWait: 10000,
+        timeout: 20000
       }
+    );
 
-      return mapOrderToRecord(fullOrder);
-    });
+    const tEnd = performance.now();
+    console.log(
+      `[createOrderWithReservation] Order #${orderRecord.orderNumber} created successfully in ${(tEnd - t0).toFixed(1)}ms (DB tx: ${(tEnd - tTxStart).toFixed(1)}ms)`
+    );
+
+    return orderRecord;
   },
 
   /**
