@@ -470,7 +470,7 @@ export const whatsappCommerceService = {
           printingFee: Number(item.printingFee),
           createdAt: item.createdAt.toISOString(),
           jerseyTitle: item.jersey?.title,
-          jerseyImage: item.jersey?.imageUrl
+          jerseyImage: item.jersey?.imageUrl ? item.jersey.imageUrl : undefined
         }))
       };
 
