@@ -66,14 +66,9 @@ export interface SearchCatalogResult {
   jerseys?: Array<{
     id: string;
     title: string;
-    team: string;
-    league: string;
-    season: string;
     kitType: string;
     price: number;
-    availableSizes?: JerseySize[];
-    imageUrl?: string;
-    description?: string | null;
+    sizes?: JerseySize[];
   }>;
   instruction: string;
   message?: string;
@@ -412,18 +407,13 @@ export const toolHandlers = {
       jerseys: result.data.map((j) => ({
         id: j.id,
         title: j.title,
-        team: j.team,
-        league: j.league,
-        season: j.season,
         kitType: j.kitType,
         price: j.basePrice,
-        availableSizes: j.inventory
-          ?.filter((inv) => inv.quantityAvailable > 0)
-          .map((inv) => inv.size),
-        imageUrl: j.imageUrl,
-        description: j.description
+        sizes: (j.inventory || [])
+          .filter((inv) => inv.quantityAvailable > 0)
+          .map((inv) => inv.size)
       })),
-      instruction: 'Mention the matching kit(s), prices, and available sizes. If the customer wants to see a picture, you can offer to send a photo using send_product_media.'
+      instruction: 'Mention matching kit(s), prices, and available sizes. To send the official photo card, call show_product.'
     };
   },
 
@@ -956,3 +946,7 @@ export const toolHandlers = {
   }
 };
 
+export function getToolsForRoute(allowedToolNames?: string[]): ToolDefinition[] | undefined {
+  if (!allowedToolNames || allowedToolNames.length === 0) return undefined;
+  return AI_TOOLS.filter((t) => allowedToolNames.includes(t.function.name));
+}

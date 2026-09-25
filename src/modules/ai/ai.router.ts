@@ -5,11 +5,21 @@ export interface RouteInput {
   historyLength?: number;
 }
 
+export type RequestType =
+  | 'greeting'
+  | 'product_discovery'
+  | 'product_question'
+  | 'order_status'
+  | 'support_or_address'
+  | 'fallback';
+
 export type RouteDecision =
   | {
       type: 'agent';
       tier: ModelTier;
       reason: string;
+      requestType: RequestType;
+      allowedTools: string[];
     }
   | {
       type: 'out_of_scope';
@@ -43,67 +53,14 @@ const OUT_OF_SCOPE_RULES: Array<{ reason: string; pattern: RegExp }> = [
 ];
 
 /**
- * Layer 2: Deterministic complexity router.
- * Evaluates whether an in-scope sales message requires the 'smart' reasoning model
- * or can be handled by the cost-effective 'fast' model.
- */
-const COMPLEXITY_RULES: Array<{
-  reason: string;
-  test: (input: RouteInput) => boolean;
-}> = [
-  {
-    // Customer dissatisfaction or disputes require nuanced tone and policy adherence
-    reason: 'complaint_or_dispute',
-    test: ({ userMessage }) =>
-      /\b(refund|complain|scam|fraud|wrong (size|item|jersey)|damaged|not (yet )?(delivered|received)|never (got|received)|disappointed|cancel(l?ed|l?ing)? (my )?order|return|exchange|chargeback)\b/i.test(
-        userMessage
-      )
-  },
-  {
-    // Payment discrepancies need exact financial reasoning
-    reason: 'payment_problem',
-    test: ({ userMessage }) =>
-      /\b(debited|deducted|paid but|payment (failed|issue|problem|not (showing|confirmed)))\b/i.test(
-        userMessage
-      )
-  },
-  {
-    // High-intent purchase decisions involving custom name printing and delivery logistics
-    reason: 'checkout_or_customization',
-    test: ({ userMessage }) =>
-      /\b(i('ll| will)? (take|buy|order)|i want (it|this|to (buy|order))|buy (it|this)|order (it|this)|checkout|pay(ment)? link|custom (name|print)|print (my )?name|deliver(y|ed)? to|delivery address)\b/i.test(
-        userMessage
-      )
-  },
-  {
-    // Post-purchase order modifications and address updates require careful state guardrails
-    reason: 'order_address_or_delivery_update',
-    test: ({ userMessage }) =>
-      /\b(change|update|wrong|modify|correct|edit)\b.{0,80}\b(address|location|destination|delivery|street|house|apartment|flat)\b/i.test(
-        userMessage
-      ) ||
-      /\b(new address|different address|deliver to another|send to another|change where you('re)? sending)\b/i.test(
-        userMessage
-      ) ||
-      /\b(delivery note|gate code|leave (it|the package) with|call (me|when)|instructions for (the )?driver)\b/i.test(
-        userMessage
-      )
-  },
-  {
-    // Subjective recommendations, comparative gift evaluations, or explicit budget constraints
-    reason: 'advice_or_budget_comparison',
-    test: ({ userMessage }) =>
-      /\b(gift|recommend|suggest|advise|which (one|jersey|kit)|what (should|would) (i|you)|budget|cheaper|cheapest|difference|compare|versus|vs\.?|worth|quality|authentic|original|fake)\b/i.test(
-        userMessage
-      ) || /\b(under|below|around|about|max|within)\s*[₦n]?\s*\d/i.test(userMessage)
-  }
-];
-
-/**
  * Evaluates customer messages with zero LLM overhead:
  * 1. Screens for obvious out-of-scope abuse (returning static redirect with 0 token cost).
- * 2. Assigns 'smart' tier to high-stakes sales, complaints, or custom print requests.
- * 3. Defaults standard catalog browsing, stock queries, and kit questions to 'fast' tier.
+ * 2. Applies Dynamic Tool Gating:
+ *    - Greetings / General Chit-Chat -> tools: [] (saves ~930 prompt tokens)
+ *    - Order tracking -> tools: ['check_order_status']
+ *    - Address update -> tools: ['update_order_shipping_address', 'check_order_status']
+ *    - Discovery & inquiries -> tools: ['show_product', 'search_catalog', 'check_stock']
+ * 3. Assigns 'smart' tier to complaints or custom printing; defaults other queries to 'fast' tier.
  */
 export function routeMessage(input: RouteInput): RouteDecision {
   const trimmed = input.userMessage.trim();
@@ -119,21 +76,82 @@ export function routeMessage(input: RouteInput): RouteDecision {
     }
   }
 
-  // 2. Layer 2 Complexity Screening for In-Scope Messages
-  for (const rule of COMPLEXITY_RULES) {
-    if (rule.test(input)) {
-      return {
-        type: 'agent',
-        tier: 'smart',
-        reason: rule.reason
-      };
-    }
+  // 2. Dynamic Tool Gating: Pure Greetings / Pleasantries (0 tools -> saves ~930 prompt tokens)
+  const isShortGreeting =
+    /^(hi|hello|hey|good\s*(morning|afternoon|evening)|yo|sup|hiya|help|menu|info|how\s+are\s+you)\b/i.test(
+      trimmed
+    ) && trimmed.split(/\s+/).length <= 4;
+
+  if (isShortGreeting) {
+    return {
+      type: 'agent',
+      tier: 'fast',
+      reason: 'greeting_no_tools',
+      requestType: 'greeting',
+      allowedTools: []
+    };
   }
 
-  // 3. Default: Predictable catalog inquiries, greetings, and stock checks route to 'fast'
+  // 3. Dynamic Tool Gating: Order Tracking Inquiry
+  const isOrderTracking =
+    /\b(order\s*(status|number|update|tracking)|track(ing)?|where is my (order|jersey)|has my (order|jersey) (shipped|delivered))\b/i.test(
+      trimmed
+    );
+
+  if (isOrderTracking) {
+    return {
+      type: 'agent',
+      tier: 'fast',
+      reason: 'order_tracking',
+      requestType: 'order_status',
+      allowedTools: ['check_order_status']
+    };
+  }
+
+  // 4. Dynamic Tool Gating: Order Address / Delivery Notes
+  const isAddressUpdate =
+    /\b(change|update|wrong|modify|correct|edit)\b.{0,80}\b(address|location|destination|delivery|street|house|apartment|flat)\b/i.test(
+      trimmed
+    ) ||
+    /\b(new address|different address|deliver to another|send to another|change where you('re)? sending)\b/i.test(
+      trimmed
+    ) ||
+    /\b(delivery note|gate code|leave (it|the package) with|call (me|when)|instructions for (the )?driver)\b/i.test(
+      trimmed
+    );
+
+  if (isAddressUpdate) {
+    return {
+      type: 'agent',
+      tier: 'smart',
+      reason: 'order_address_update',
+      requestType: 'support_or_address',
+      allowedTools: ['update_order_shipping_address', 'check_order_status']
+    };
+  }
+
+  // 5. Customer Complaints / Disputes (Escalated to smart model)
+  const isComplaint =
+    /\b(refund|complain|scam|fraud|wrong (size|item|jersey)|damaged|not (yet )?(delivered|received)|never (got|received)|disappointed|cancel(l?ed|l?ing)? (my )?order|return|exchange|chargeback)\b/i.test(
+      trimmed
+    );
+
+  if (isComplaint) {
+    return {
+      type: 'agent',
+      tier: 'smart',
+      reason: 'customer_complaint',
+      requestType: 'product_question',
+      allowedTools: ['show_product', 'search_catalog', 'check_stock']
+    };
+  }
+
+  // 6. Default: Product Discovery & Inquiries
   return {
     type: 'agent',
     tier: 'fast',
-    reason: 'standard_catalog_inquiry'
+    reason: 'standard_catalog_inquiry',
+    requestType: 'product_discovery',
+    allowedTools: ['show_product', 'search_catalog', 'check_stock']
   };
 }

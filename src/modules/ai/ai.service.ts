@@ -8,35 +8,16 @@ import { routeMessage } from './ai.router.js';
 import { runAgentTurn } from './ai.agent.js';
 import { ChatMessage, CustomerContext, AiBudgetStatus } from './ai.types.js';
 
-const SYSTEM_PROMPT = `You are the friendly, expert AI Sales Assistant for Jersey Hub, an online football jersey store.
-Your goal is to help customers find authentic club and national team kits, verify size availability, and complete their purchases seamlessly.
+import { getToolsForRoute } from './ai.tools.js';
 
-CORE PRINCIPLES & INTENT RECOGNITION:
-1. Tone & Style:
-   - Friendly, concise, enthusiastic about football.
-   - Format replies cleanly for mobile WhatsApp reading (use bolding and emojis like ⚽ sparingly).
-2. Context & Follow-Up Intent Retention:
-   - When a customer asks a follow-up (e.g. "send me the home kit", "what about the away", "let me see home kit", "do you have third?"), ALWAYS retain the active team from previous messages in the conversation.
-   - When the customer asks for a specific kit type (Home, Away, Third, Goalkeeper), pass \`kitType\` explicitly (e.g. team: "Manchester United", kitType: "Home").
-3. Product Photos & Media Delivery:
-   - When a customer asks about a jersey, asks to see it, asks for a photo, asks "show me", "let me see it", or inquires about pricing and sizes, ALWAYS call \`show_product\`.
-   - \`show_product\` automatically resolves the jersey, verifies in-stock sizes, and delivers the official high-resolution photo card directly into the customer WhatsApp thread in a single step!
-   - Set \`sendPhoto: true\` (the default) whenever the customer asks to see, view, or get photos. Set \`sendPhoto: false\` only if they strictly asked for a text-only question.
-   - CRITICAL: When \`show_product\` reports \`photoSent: true\`, let the customer know the official photo has been sent above 📸, state the price and in-stock sizes, and ask what size they would like to order.
-   - NEVER output markdown links, image tags like ![alt](url), or fake links like [View Kit](...).
-4. Truthful & Real Data Only (Zero Fabrication):
-   - NEVER fabricate prices, stock, order numbers, or payment links.
-   - Only state an item is "out of stock" if verified that \`availableSizes\` has 0 quantity.
-   - If a kit type does not exist in the catalog, truthfully explain that we do not carry that version and offer the kits that are in stock.
-5. Closing Sales & Order Checkout:
-   - When a customer is ready to buy and has picked their size, use \`create_checkout\` to generate a secure Paystack payment link and hold their jersey for 15 minutes.
-   - Inform the customer that their kit is reserved for 15 minutes while they complete checkout.
-6. Order & Payment Inquiries:
-   - When a customer asks about their order status, payment confirmation, or shipping tracking, use \`check_order_status\` to look up their order.
-7. Updating Delivery Address & Delivery Instructions:
-   - When a customer wants to change, correct, or update their delivery address or add delivery instructions (e.g. gate code, phone note), call \`update_order_shipping_address\`.
-   - Pass the full address in \`shippingAddress\`, and any specific delivery instructions in \`deliveryNotes\`. If they mention an order number (e.g. #10042), pass it in \`orderNumber\`.
-   - STRICT STATE MACHINE GUARDRAILS: If the tool reports that the order has already shipped or been handed to the courier, TRUTHFULLY explain this boundary and direct the customer to human support. Do NOT promise an address change that the system has rejected.`;
+const SYSTEM_PROMPT = `You are the football jersey sales assistant for Jersey Hub on WhatsApp.
+Help customers find authentic kits, check stock, and view kit cards.
+
+RULES:
+1. Tone: Friendly, concise, mobile-friendly (use bolding and ⚽ sparingly).
+2. Product Inquiry: Call show_product when asked to see a kit, view photos, or check prices/sizes. Retain active team from previous context.
+3. Truthful: Never invent prices, sizes, or stock. Use tool data only.
+4. Formatting: Never output markdown links or image tags like ![alt](url). WhatsApp cards handle visuals.`;
 
 export class AiService {
   private providers: AiProviders;
@@ -103,8 +84,8 @@ export class AiService {
         return;
       }
 
-      // 4. Fetch recent message history (last 12 messages for rich context)
-      const recentMessages = await chatRepository.getMessages(organizationId, conversationId, 12);
+      // 4. Fetch recent message history (last 6 messages for focused context)
+      const recentMessages = await chatRepository.getMessages(organizationId, conversationId, 6);
 
       const messages: ChatMessage[] = [{ role: 'system', content: SYSTEM_PROMPT }];
 
@@ -114,17 +95,6 @@ export class AiService {
             role: m.direction === 'inbound' ? 'user' : 'assistant',
             content: m.body
           });
-        } else if (m.type === 'interactive_kit') {
-          const kitName = m.jerseyTitle || m.body || 'Jersey Kit Card';
-          messages.push({
-            role: 'assistant',
-            content: `[Photo Card sent to customer: ${kitName}]`
-          });
-        } else if (m.type === 'payment_link') {
-          messages.push({
-            role: 'assistant',
-            content: '[Order Invoice & Payment Link sent to customer]'
-          });
         }
       }
 
@@ -133,16 +103,50 @@ export class AiService {
         messages.push({ role: 'user', content: userMessage });
       }
 
-      // 5. Run Multi-Tier Agent Turn (fast -> smart escalation, pre-tool validation, max 4 tools)
-      const agentResult = await runAgentTurn(this.providers, route.tier, messages, {
-        organizationId,
-        conversationId,
-        customer
-      });
+      // 5. Run Multi-Tier Agent Turn with Dynamic Tool Gating
+      const activeTools = getToolsForRoute(route.allowedTools);
+      const agentResult = await runAgentTurn(
+        this.providers,
+        route.tier,
+        messages,
+        {
+          organizationId,
+          conversationId,
+          customer
+        },
+        activeTools
+      );
 
+      // 6. Atomic Concurrency-Safe Budget Enforcement & Telemetry
+      const modelDisplayName =
+        agentResult.models.length > 0
+          ? agentResult.models.join(', ')
+          : this.providers[route.tier].getModelName();
+
+      if (agentResult.promptTokens > 0) {
+        const isAllowed = await this.checkAndRecordAiUsage(
+          organizationId,
+          conversationId,
+          modelDisplayName,
+          agentResult.promptTokens,
+          agentResult.completionTokens,
+          agentResult.costUsd,
+          agentResult.toolsCalled,
+          route.requestType
+        );
+
+        if (!isAllowed) {
+          console.warn(
+            `[AI Safety] Organization ${organizationId} AI budget limit reached or globally disabled.`
+          );
+          return;
+        }
+      }
+
+      // If a tool already delivered the complete UI card to WhatsApp, single-pass terminates here
       if (!agentResult.text) return;
 
-      // 6. Clean and sanitize reply text: strip any hallucinated markdown links or bracket syntax
+      // 7. Clean and sanitize reply text: strip any hallucinated markdown links or bracket syntax
       const cleanReplyText = (agentResult.text || '')
         .replace(/!\[([^\]]*)\]\([^\)]*\)/g, '')
         .replace(/\[([^\]]*)\]\([^\)]*\)/g, '$1')
@@ -151,29 +155,6 @@ export class AiService {
         .trim();
 
       if (!cleanReplyText) return;
-
-      // 7. Atomic Concurrency-Safe Budget Enforcement (Fail-closed)
-      const modelDisplayName =
-        agentResult.models.length > 0
-          ? agentResult.models.join(', ')
-          : this.providers[route.tier].getModelName();
-
-      const isAllowed = await this.checkAndRecordAiUsage(
-        organizationId,
-        conversationId,
-        modelDisplayName,
-        agentResult.promptTokens,
-        agentResult.completionTokens,
-        agentResult.costUsd,
-        agentResult.toolsCalled
-      );
-
-      if (!isAllowed) {
-        console.warn(
-          `[AI Safety] Organization ${organizationId} AI budget limit reached or globally disabled. Suppressing outbound AI reply.`
-        );
-        return;
-      }
 
       // 8. Dispatch outbound text response to customer WhatsApp
       const metaMessageId = await whatsappService.sendTextMessage(organizationId, {
@@ -216,7 +197,8 @@ export class AiService {
     promptTokens: number,
     completionTokens: number,
     costUsd: number,
-    toolsCalled: string[]
+    toolsCalled: string[],
+    requestType?: string
   ): Promise<boolean> {
     const lagosDateStr = new Intl.DateTimeFormat('en-CA', {
       timeZone: 'Africa/Lagos',
@@ -308,6 +290,7 @@ export class AiService {
             organizationId,
             conversationId,
             model: modelName,
+            requestType: requestType || 'natural_language',
             promptTokens,
             completionTokens,
             totalTokens: promptTokens + completionTokens,

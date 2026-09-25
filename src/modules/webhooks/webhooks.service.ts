@@ -6,6 +6,43 @@ import { chatRepository } from '../chat/chat.repository.js';
 import { ordersRepository } from '../orders/orders.repository.js';
 import { socketService } from '../../core/socket/socket.service.js';
 import { interactiveActionRouter } from './interactive-action.router.js';
+import { conversationStateService } from '../chat/conversation-state.service.js';
+import { whatsappActions } from '../whatsapp/whatsapp-actions.js';
+import { whatsappService } from '../whatsapp/whatsapp.service.js';
+import { JerseySize } from '../catalog/catalog.types.js';
+
+function extractSizeFromText(text: string): JerseySize | null {
+  const trimmed = text.trim().toLowerCase();
+  const directMap: Record<string, JerseySize> = {
+    xs: 'XS',
+    extra_small: 'XS',
+    s: 'S',
+    small: 'S',
+    the_small: 'S',
+    m: 'M',
+    medium: 'M',
+    the_medium: 'M',
+    l: 'L',
+    large: 'L',
+    the_large: 'L',
+    xl: 'XL',
+    extra_large: 'XL',
+    xxl: 'XXL',
+    '2xl': 'XXL',
+    '3xl': '3XL',
+    xxxl: '3XL'
+  };
+
+  const cleaned = trimmed.replace(/^(size|the size)\s+/i, '').replace(/\s+/g, '_');
+  if (directMap[cleaned]) return directMap[cleaned];
+
+  const match = trimmed.match(/\b(xs|s|m|l|xl|xxl|2xl|3xl|small|medium|large)\b/i);
+  if (match && directMap[match[1].toLowerCase()]) {
+    return directMap[match[1].toLowerCase()];
+  }
+
+  return null;
+}
 
 export interface MetaWebhookMessage {
   from: string;
@@ -326,17 +363,69 @@ export const webhooksService = {
                 socketService.emitConversationUpdated(organizationId, updatedConv);
               }
 
-              // Intercept deterministic button and list clicks: 0 LLM inference required
+              // 1. Intercept deterministic button and list clicks: 0 LLM inference required
               let actionHandled = false;
               if (actionId && interactiveActionRouter.isHandled(actionId)) {
-                actionHandled = await interactiveActionRouter.dispatch(actionId, {
+                actionHandled = true; // Recognised interactive action -> NEVER invoke AI
+                await interactiveActionRouter.dispatch(actionId, {
                   organizationId,
                   conversationId: conversation.id,
                   customer
                 });
               }
 
-              // Trigger AI response strictly if message was not handled deterministically and AI is enabled
+              // 2. Intercept state-driven text commands (e.g. typing "Medium", "M", "Cancel", "Buy"): 0 LLM inference required
+              if (!actionHandled && body) {
+                const trimmed = body.trim().toLowerCase();
+                const state = await conversationStateService.getState(organizationId, conversation.id);
+
+                if (/^(cancel|reset|restart|clear|start over)$/i.test(trimmed)) {
+                  await conversationStateService.resetState(organizationId, conversation.id);
+                  await whatsappService.sendTextMessage(organizationId, {
+                    toPhone: fromPhone,
+                    body: '🔄 Your shopping session has been reset. Which football club or jersey are you looking for today? ⚽'
+                  });
+                  actionHandled = true;
+                } else if (state.stage === 'selecting_size' && state.jerseyId) {
+                  const matchedSize = extractSizeFromText(trimmed);
+                  if (matchedSize) {
+                    actionHandled = true;
+                    await interactiveActionRouter.dispatch(
+                      whatsappActions.buildBuy(state.jerseyId, matchedSize),
+                      {
+                        organizationId,
+                        conversationId: conversation.id,
+                        customer
+                      }
+                    );
+                  }
+                } else if (state.stage === 'viewing_product' && state.jerseyId) {
+                  const matchedSize = extractSizeFromText(trimmed);
+                  if (matchedSize) {
+                    actionHandled = true;
+                    await interactiveActionRouter.dispatch(
+                      whatsappActions.buildBuy(state.jerseyId, matchedSize),
+                      {
+                        organizationId,
+                        conversationId: conversation.id,
+                        customer
+                      }
+                    );
+                  } else if (/^(buy|order|purchase|checkout|sizes?|pick size|choose size)$/i.test(trimmed)) {
+                    actionHandled = true;
+                    await interactiveActionRouter.dispatch(
+                      whatsappActions.buildSizes(state.jerseyId),
+                      {
+                        organizationId,
+                        conversationId: conversation.id,
+                        customer
+                      }
+                    );
+                  }
+                }
+              }
+
+              // 3. Trigger AI response strictly if message was not handled deterministically and AI is enabled
               if (!actionHandled && conversation.isAiEnabled && body) {
                 await webhooksService.triggerAiResponse(
                   organizationId,

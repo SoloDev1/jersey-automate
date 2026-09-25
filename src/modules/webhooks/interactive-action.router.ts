@@ -1,10 +1,11 @@
 import { whatsappActions, WhatsAppAction } from '../whatsapp/whatsapp-actions.js';
 import { whatsappCommerceService } from '../whatsapp/whatsapp-commerce.service.js';
+import { whatsappService } from '../whatsapp/whatsapp.service.js';
 import { catalogService } from '../catalog/catalog.service.js';
 import { ordersService } from '../orders/orders.service.js';
 import { paymentsService } from '../payments/payments.service.js';
 import { chatService } from '../chat/chat.service.js';
-import { socketService } from '../../core/socket/socket.service.js';
+import { conversationStateService } from '../chat/conversation-state.service.js';
 
 export interface ActionRouterContext {
   organizationId: string;
@@ -27,6 +28,7 @@ export const interactiveActionRouter = {
 
   /**
    * Dispatches a parsed action to the appropriate domain service without calling AI inference.
+   * GUARANTEE: Returns true for any recognized action, preventing fallback into LLM.
    */
   async dispatch(rawActionId: string, ctx: ActionRouterContext): Promise<boolean> {
     const action: WhatsAppAction | null = whatsappActions.parse(rawActionId);
@@ -40,25 +42,49 @@ export const interactiveActionRouter = {
         case 'view': {
           const jersey = await catalogService.getJersey(organizationId, action.jerseyId);
           if (jersey && jersey.isActive) {
+            await conversationStateService.updateState(organizationId, conversationId, {
+              stage: 'viewing_product',
+              jerseyId: jersey.id,
+              team: jersey.team,
+              kitType: jersey.kitType
+            });
+
             await whatsappCommerceService.sendJerseyCard(organizationId, conversationId, {
               toPhone,
               jersey
             });
             return true;
           }
-          break;
+
+          await whatsappService.sendTextMessage(organizationId, {
+            toPhone,
+            body: `😔 Sorry, this jersey is currently unavailable. Would you like to check out another club?`
+          });
+          return true;
         }
 
         case 'sizes': {
           const jersey = await catalogService.getJersey(organizationId, action.jerseyId);
           if (jersey && jersey.isActive) {
+            await conversationStateService.updateState(organizationId, conversationId, {
+              stage: 'selecting_size',
+              jerseyId: jersey.id,
+              team: jersey.team,
+              kitType: jersey.kitType
+            });
+
             await whatsappCommerceService.sendSizePicker(organizationId, conversationId, {
               toPhone,
               jersey
             });
             return true;
           }
-          break;
+
+          await whatsappService.sendTextMessage(organizationId, {
+            toPhone,
+            body: `😔 Sorry, sizes are unavailable for this kit. Would you like to check out another club?`
+          });
+          return true;
         }
 
         case 'team': {
@@ -66,7 +92,13 @@ export const interactiveActionRouter = {
             team: action.team,
             limit: 10
           });
+
           if (res.data.length > 0) {
+            await conversationStateService.updateState(organizationId, conversationId, {
+              stage: 'selecting_kit',
+              team: action.team
+            });
+
             await whatsappCommerceService.sendKitList(organizationId, conversationId, {
               toPhone,
               team: action.team,
@@ -74,14 +106,23 @@ export const interactiveActionRouter = {
             });
             return true;
           }
-          break;
+
+          await whatsappService.sendTextMessage(organizationId, {
+            toPhone,
+            body: `⚽ We couldn't find any available kits for *${action.team}* right now. Would you like to explore other popular clubs?`
+          });
+          return true;
         }
 
         case 'buy': {
-          // 1. Never trust the button payload blindly: verify jersey and real-time inventory
+          // 1. Verify jersey and real-time inventory
           const jersey = await catalogService.getJersey(organizationId, action.jerseyId);
           if (!jersey || !jersey.isActive) {
-            return false;
+            await whatsappService.sendTextMessage(organizationId, {
+              toPhone,
+              body: `😔 Sorry, this jersey is no longer active in our store. Please choose another kit.`
+            });
+            return true;
           }
 
           const stockCheck = await catalogService.isSizeAvailable(
@@ -92,7 +133,7 @@ export const interactiveActionRouter = {
           );
 
           if (!stockCheck.available) {
-            // Inventory race condition: item just sold out -> send size picker with remaining sizes
+            // Inventory race condition: item sold out -> offer remaining in-stock sizes
             await whatsappCommerceService.sendSizePicker(organizationId, conversationId, {
               toPhone,
               jersey
@@ -120,7 +161,20 @@ export const interactiveActionRouter = {
             customerEmail
           );
 
-          // 4. Deliver interactive Paystack CTA card
+          // 4. Update conversation state
+          await conversationStateService.updateState(organizationId, conversationId, {
+            stage: 'awaiting_payment',
+            jerseyId: jersey.id,
+            team: jersey.team,
+            kitType: jersey.kitType,
+            size: action.size,
+            quantity: 1,
+            orderId: order.id,
+            orderNumber: order.orderNumber,
+            paymentUrl: paymentInit.authorizationUrl
+          });
+
+          // 5. Deliver interactive Paystack CTA card
           await whatsappCommerceService.sendCheckoutCard(organizationId, conversationId, {
             toPhone,
             orderNumber: order.orderNumber,
@@ -138,6 +192,10 @@ export const interactiveActionRouter = {
           // Disable AI for this thread to enable human takeover
           await chatService.toggleAi(organizationId, conversationId, false);
 
+          await conversationStateService.updateState(organizationId, conversationId, {
+            stage: 'completed'
+          });
+
           await whatsappCommerceService.sendHumanSupportHandover(organizationId, conversationId, {
             toPhone
           });
@@ -147,8 +205,19 @@ export const interactiveActionRouter = {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`[ActionRouter] Error executing action "${rawActionId}":`, msg);
+
+      // Deterministic error response to customer via WhatsApp so they are never left hanging
+      try {
+        await whatsappService.sendTextMessage(organizationId, {
+          toPhone,
+          body: `⚠️ We encountered a temporary issue processing your request. Please tap the button again or contact our support team.`
+        });
+      } catch (sendErr: unknown) {
+        console.error('[ActionRouter] Failed to send fallback error text:', sendErr);
+      }
+      return true; // Still marked handled! NEVER fall back into LLM!
     }
 
-    return false;
+    return true;
   }
 };

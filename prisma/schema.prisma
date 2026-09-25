@@ -188,6 +188,7 @@ model Conversation {
   lastMessagePreview String?  @map("last_message_preview") @db.Text
   lastMessageAt      DateTime @default(now()) @map("last_message_at") @db.Timestamptz(6)
   unreadCount        Int      @default(0) @map("unread_count")
+  state              Json?    @default("{}")
   createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt          DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -424,6 +425,7 @@ model AiUsageLog {
   conversation   Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
 
   model            String   @db.VarChar(100)
+  requestType      String?  @default("natural_language") @map("request_type") @db.VarChar(50)
   promptTokens     Int      @map("prompt_tokens")
   completionTokens Int      @map("completion_tokens")
   totalTokens      Int      @map("total_tokens")

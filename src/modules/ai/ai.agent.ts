@@ -1,7 +1,7 @@
 import { AI_TOOLS, toolHandlers } from './ai.tools.js';
 import type { AiProviders, ModelTier } from './providers/openai.provider.js';
 import type { AiProvider } from './providers/aiProvider.interface.js';
-import type { AiResponse, ChatMessage, CustomerContext, ToolCall } from './ai.types.js';
+import type { AiResponse, ChatMessage, CustomerContext, ToolCall, ToolDefinition } from './ai.types.js';
 
 const MAX_TOOL_CALLS_PER_TURN = 4;
 
@@ -154,13 +154,15 @@ export async function runAgentTurn(
   providers: AiProviders,
   startTier: ModelTier,
   baseMessages: ChatMessage[],
-  ctx: AgentContext
+  ctx: AgentContext,
+  tools?: ToolDefinition[]
 ): Promise<AgentResult> {
   const meter = new UsageMeter();
   const messages: ChatMessage[] = [...baseMessages];
   const toolsCalled: string[] = [];
   let tier: ModelTier = startTier;
   let escalated = false;
+  const activeTools = tools && tools.length > 0 ? tools : undefined;
 
   // ── Phase 1: Planning (LLM Call #1) ─────────────────────────────────────────
   // Escalation occurs strictly BEFORE any tool runs.
@@ -168,7 +170,7 @@ export async function runAgentTurn(
   let evaluation = { ok: false, parsed: [] as ParsedCall[] };
 
   try {
-    plan = await providers[tier].generateResponse(messages, AI_TOOLS);
+    plan = await providers[tier].generateResponse(messages, activeTools);
     meter.add(providers[tier], plan);
     evaluation = evaluatePlan(plan);
   } catch (err: unknown) {
@@ -183,7 +185,7 @@ export async function runAgentTurn(
       tier = 'smart';
       escalated = true;
       try {
-        plan = await providers.smart.generateResponse(messages, AI_TOOLS);
+        plan = await providers.smart.generateResponse(messages, activeTools);
         meter.add(providers.smart, plan);
         evaluation = evaluatePlan(plan);
       } catch (err: unknown) {
@@ -221,6 +223,24 @@ export async function runAgentTurn(
       output = { error: msg };
     }
     messages.push({ role: 'tool', toolCallId: call.id, name, content: JSON.stringify(output) });
+  }
+
+  // ── Single-Pass Optimization: Skip Call #2 if UI Card was Delivered ─────────
+  let uiCardDelivered = false;
+  for (const m of messages) {
+    if (m.role === 'tool' && typeof m.content === 'string') {
+      try {
+        const parsed = JSON.parse(m.content) as Record<string, unknown>;
+        if (parsed.photoSent || parsed.checkoutCardSentAbove) {
+          uiCardDelivered = true;
+          break;
+        }
+      } catch {}
+    }
+  }
+
+  if (uiCardDelivered) {
+    return { text: null, ...snapshot(meter), toolsCalled, escalated };
   }
 
   // ── Phase 4: Customer reply synthesis (LLM Call #2) ─────────────────────────
