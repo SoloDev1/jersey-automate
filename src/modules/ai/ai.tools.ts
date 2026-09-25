@@ -6,6 +6,7 @@ import { UpdateOrderAddressResult } from '../orders/orders.types.js';
 import { JerseySize, JerseyRecord, JerseyInventoryRecord } from '../catalog/catalog.types.js';
 import { prisma } from '../../core/database/prisma.js';
 import { whatsappService } from '../whatsapp/whatsapp.service.js';
+import { whatsappCommerceService } from '../whatsapp/whatsapp-commerce.service.js';
 import { chatRepository } from '../chat/chat.repository.js';
 import { socketService } from '../../core/socket/socket.service.js';
 
@@ -587,37 +588,15 @@ export const toolHandlers = {
 
       if (shouldSendPhoto && jersey.imageUrl) {
         try {
-          const metaMessageId = await whatsappService.sendKitCard(organizationId, {
+          await whatsappCommerceService.sendJerseyCard(organizationId, conversationId, {
             toPhone: customerPhone,
-            jerseyTitle: jersey.title,
-            imageUrl: jersey.imageUrl,
-            price: jersey.basePrice,
-            currency,
-            description: jersey.description
+            jersey,
+            currency
           });
-
-          const savedKitMessage = await chatRepository.insertMessage(organizationId, {
-            conversationId,
-            metaMessageId,
-            direction: 'outbound',
-            type: 'interactive_kit',
-            body: `⚽ ${jersey.title} - ${currency} ${jersey.basePrice}`,
-            mediaUrl: jersey.imageUrl,
-            jerseyId: jersey.id,
-            deliveryStatus: 'sent'
-          });
-
-          if (savedKitMessage) {
-            socketService.emitNewMessage(organizationId, savedKitMessage);
-            const updatedConv = await chatRepository.getConversationById(organizationId, conversationId);
-            if (updatedConv) {
-              socketService.emitConversationUpdated(organizationId, updatedConv);
-            }
-          }
           photoSent = true;
         } catch (mediaErr: unknown) {
           const msg = mediaErr instanceof Error ? mediaErr.message : 'Media dispatch error';
-          console.warn(`[show_product] Photo dispatch issue for ${jersey.title}:`, msg);
+          console.warn(`[show_product] Interactive card dispatch issue for ${jersey.title}:`, msg);
         }
       }
 
@@ -872,27 +851,15 @@ export const toolHandlers = {
         .filter(Boolean)
         .join('\n');
 
-      const metaMessageId = await whatsappService.sendTextMessage(organizationId, {
+      await whatsappCommerceService.sendCheckoutCard(organizationId, conversationId, {
         toPhone: customerPhone,
-        body: checkoutCard
+        orderNumber: order.orderNumber,
+        jerseyTitle: jersey?.title || 'Football Kit',
+        size: args.size,
+        totalAmount: order.totalAmount,
+        currency: order.currency,
+        paymentUrl: paymentInit.authorizationUrl
       });
-
-      const savedCheckoutMessage = await chatRepository.insertMessage(organizationId, {
-        conversationId,
-        metaMessageId,
-        direction: 'outbound',
-        type: 'payment_link',
-        body: checkoutCard,
-        deliveryStatus: 'sent'
-      });
-
-      if (savedCheckoutMessage) {
-        socketService.emitNewMessage(organizationId, savedCheckoutMessage);
-        const updatedConv = await chatRepository.getConversationById(organizationId, conversationId);
-        if (updatedConv) {
-          socketService.emitConversationUpdated(organizationId, updatedConv);
-        }
-      }
 
       const response: CreateCheckoutResult = {
         success: true,

@@ -9,7 +9,8 @@ import {
   WhatsAppStatusResponse,
   OnboardDTO,
   SendMessageOptions,
-  SendKitCardOptions
+  SendKitCardOptions,
+  SendInteractiveOptions
 } from './whatsapp.types.js';
 
 const GRAPH_API_BASE = `https://graph.facebook.com/${env.GRAPH_API_VERSION}`;
@@ -371,6 +372,99 @@ export const whatsappService = {
       );
 
       return res.data.messages?.[0]?.id || `wamid_kit_${Date.now()}`;
+    } catch (error) {
+      throw sanitizeMetaError(error);
+    }
+  },
+
+  /**
+   * Generic primitive to send any Meta-compliant WhatsApp Interactive message (Buttons, Lists, CTA URLs).
+   */
+  async sendInteractiveMessage(
+    organizationId: string,
+    options: SendInteractiveOptions
+  ): Promise<string> {
+    const creds = await this.getTenantCredentials(organizationId);
+    if (!creds.isConnected || !creds.phoneNumberId) {
+      throw new Error(`WhatsApp is not connected for organization ${organizationId}`);
+    }
+
+    const cleanRecipient = options.toPhone.replace(/\+/g, '').trim();
+    const url = `${GRAPH_API_BASE}/${creds.phoneNumberId}/messages`;
+
+    let actionPayload: Record<string, unknown>;
+
+    if (options.action.type === 'button') {
+      actionPayload = {
+        buttons: options.action.buttons.slice(0, 3).map((b) => ({
+          type: 'reply',
+          reply: {
+            id: b.id,
+            title: b.title.slice(0, 20)
+          }
+        }))
+      };
+    } else if (options.action.type === 'list') {
+      actionPayload = {
+        button: options.action.buttonText.slice(0, 20),
+        sections: options.action.sections.map((s) => ({
+          ...(s.title && { title: s.title.slice(0, 24) }),
+          rows: s.rows.slice(0, 10).map((r) => ({
+            id: r.id,
+            title: r.title.slice(0, 24),
+            ...(r.description && { description: r.description.slice(0, 72) })
+          }))
+        }))
+      };
+    } else {
+      // CTA URL button
+      actionPayload = {
+        name: 'cta_url',
+        parameters: {
+          display_text: options.action.displayText.slice(0, 20),
+          url: options.action.url
+        }
+      };
+    }
+
+    const interactivePayload: Record<string, unknown> = {
+      type: options.action.type,
+      body: {
+        text: options.body
+      },
+      action: actionPayload
+    };
+
+    if (options.header) {
+      interactivePayload.header = options.header;
+    }
+
+    if (options.footer) {
+      interactivePayload.footer = {
+        text: options.footer.slice(0, 60)
+      };
+    }
+
+    try {
+      const res = await axios.post<{ messages: Array<{ id: string }> }>(
+        url,
+        {
+          messaging_product: 'whatsapp',
+          recipient_type: 'individual',
+          to: cleanRecipient,
+          type: 'interactive',
+          interactive: interactivePayload
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${creds.accessToken}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 10000
+        }
+      );
+
+      return res.data.messages?.[0]?.id || `wamid_interactive_${Date.now()}`;
     } catch (error) {
       throw sanitizeMetaError(error);
     }

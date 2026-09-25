@@ -5,6 +5,7 @@ import { Prisma } from '@prisma/client';
 import { chatRepository } from '../chat/chat.repository.js';
 import { ordersRepository } from '../orders/orders.repository.js';
 import { socketService } from '../../core/socket/socket.service.js';
+import { interactiveActionRouter } from './interactive-action.router.js';
 
 export interface MetaWebhookMessage {
   from: string;
@@ -280,6 +281,7 @@ export const webhooksService = {
             let type: 'text' | 'image' | 'interactive_kit' | 'payment_link' = 'text';
             let body: string | null = null;
             let mediaUrl: string | null = null;
+            let actionId: string | undefined;
 
             if (msg.type === 'text' && msg.text?.body) {
               type = 'text';
@@ -292,12 +294,14 @@ export const webhooksService = {
                 : null;
             } else if (msg.type === 'interactive') {
               type = 'text';
+              actionId = msg.interactive?.button_reply?.id || msg.interactive?.list_reply?.id;
               body =
                 msg.interactive?.button_reply?.title ||
                 msg.interactive?.list_reply?.title ||
                 'Interactive response';
             } else if (msg.type === 'button') {
               type = 'text';
+              actionId = msg.button?.payload;
               body = msg.button?.text || 'Quick reply button';
             } else {
               body = `[${msg.type || 'unknown'} message]`;
@@ -321,16 +325,26 @@ export const webhooksService = {
               if (updatedConv) {
                 socketService.emitConversationUpdated(organizationId, updatedConv);
               }
-            }
 
-            // Trigger AI response strictly if message was newly saved and AI is enabled
-            if (savedMessage && conversation.isAiEnabled && body) {
-              await webhooksService.triggerAiResponse(
-                organizationId,
-                conversation.id,
-                customer,
-                body
-              );
+              // Intercept deterministic button and list clicks: 0 LLM inference required
+              let actionHandled = false;
+              if (actionId && interactiveActionRouter.isHandled(actionId)) {
+                actionHandled = await interactiveActionRouter.dispatch(actionId, {
+                  organizationId,
+                  conversationId: conversation.id,
+                  customer
+                });
+              }
+
+              // Trigger AI response strictly if message was not handled deterministically and AI is enabled
+              if (!actionHandled && conversation.isAiEnabled && body) {
+                await webhooksService.triggerAiResponse(
+                  organizationId,
+                  conversation.id,
+                  customer,
+                  body
+                );
+              }
             }
           }
         }

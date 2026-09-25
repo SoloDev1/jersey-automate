@@ -54,3 +54,45 @@ export interface SendKitCardOptions {
   description?: string | null;
   paymentUrl?: string | null;
 }
+
+export interface WhatsAppButton {
+  id: string;
+  title: string;
+}
+
+export interface WhatsAppListRow {
+  id: string;
+  title: string;
+  description?: string;
+}
+
+export interface WhatsAppListSection {
+  title?: string;
+  rows: WhatsAppListRow[];
+}
+
+export type WhatsAppHeader =
+  | { type: 'text'; text: string }
+  | { type: 'image'; image: { link: string } };
+
+export interface SendInteractiveOptions {
+  toPhone: string;
+  body: string;
+  header?: WhatsAppHeader;
+  footer?: string;
+  action:
+    | {
+        type: 'button';
+        buttons: WhatsAppButton[];
+      }
+    | {
+        type: 'list';
+        buttonText: string;
+        sections: WhatsAppListSection[];
+      }
+    | {
+        type: 'cta_url';
+        displayText: string;
+        url: string;
+      };
+}
