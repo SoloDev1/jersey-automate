@@ -238,7 +238,8 @@ export async function runAgentTurn(
           parsed.photoSent ||
           parsed.checkoutCardSentAbove ||
           parsed.listSent ||
-          parsed.catalogListSent
+          parsed.catalogListSent ||
+          parsed.directReplySent
         ) {
           uiCardDelivered = true;
           break;

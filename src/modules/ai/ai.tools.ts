@@ -61,6 +61,7 @@ export interface SearchCatalogResult {
   found: boolean;
   listSent?: boolean;
   photoSent?: boolean;
+  directReplySent?: boolean;
   reason?: 'SPECIFIC_KIT_TYPE_UNAVAILABLE' | 'NOT_FOUND';
   requestedKitType?: string;
   availableKitTypes?: string[];
@@ -103,6 +104,7 @@ export interface SendProductMediaResult {
 export interface ShowProductResult {
   found: boolean;
   photoSent?: boolean;
+  directReplySent?: boolean;
   jerseyId?: string;
   title?: string;
   team?: string;
@@ -148,7 +150,7 @@ export const AI_TOOLS: ToolDefinition[] = [
     type: 'function',
     function: {
       name: 'show_product',
-      description: 'Resolves football kit details (price, in-stock sizes, info) and automatically sends the official high-resolution photo card to the customer on WhatsApp if requested. Use this whenever the customer asks to see a kit, view a photo, asks about available kits, or asks about prices/sizes.',
+      description: 'Resolves a specific football kit and automatically sends the official high-resolution photo card with Buy/Size buttons directly to WhatsApp. Use whenever a SPECIFIC kit type has been specified or requested (e.g. "Madrid home", "Chelsea away", "I like the home kit", "show home jersey", "view photo").',
       parameters: {
         type: 'object',
         properties: {
@@ -180,7 +182,7 @@ export const AI_TOOLS: ToolDefinition[] = [
     type: 'function',
     function: {
       name: 'search_catalog',
-      description: 'Searches catalog and automatically delivers an interactive WhatsApp kit list (for multiple kits) or kit card to the customer. Use for general team or catalog inquiries (e.g. "Madrid", "Arsenal jerseys", "What kits are available").',
+      description: 'Searches catalog and automatically delivers an interactive WhatsApp kit list with a "Select Kit" menu to WhatsApp. Use ONLY for GENERAL team or catalog inquiries where NO specific kit type has been chosen yet (e.g. "Madrid", "Arsenal jerseys", "What kits are available?", "Show jerseys").',
       parameters: {
         type: 'object',
         properties: {
@@ -431,6 +433,31 @@ export const toolHandlers = {
         }
       }
 
+      const target = effectiveTeam ? `*${effectiveTeam}*` : 'that club';
+      const notFoundMsg = `😔 Sorry, we don't currently have ${target} kits in stock. Would you like to check out another club or league? ⚽`;
+      try {
+        const metaMessageId = await whatsappService.sendTextMessage(organizationId, {
+          toPhone: customerPhone,
+          body: notFoundMsg
+        });
+        await chatRepository.insertMessage(organizationId, {
+          conversationId,
+          metaMessageId,
+          direction: 'outbound',
+          type: 'text',
+          body: notFoundMsg,
+          deliveryStatus: 'sent'
+        });
+        return {
+          found: false,
+          directReplySent: true,
+          reason: 'NOT_FOUND',
+          instruction: 'Deterministic not-found apology delivered to customer on WhatsApp.'
+        };
+      } catch (sendErr) {
+        console.warn('[search_catalog] not-found text send fallback:', sendErr);
+      }
+
       return {
         found: false,
         reason: 'NOT_FOUND',
@@ -648,6 +675,27 @@ export const toolHandlers = {
           });
           if (fallbackRes.data.length > 0) {
             const availableTypes = fallbackRes.data.map((j) => j.kitType);
+            try {
+              await whatsappCommerceService.sendKitList(organizationId, conversationId, {
+                toPhone: customerPhone,
+                team: args.team,
+                jerseys: fallbackRes.data
+              });
+              await conversationStateService.updateState(organizationId, conversationId, {
+                stage: 'selecting_kit',
+                team: args.team
+              });
+              const res: ShowProductResult = {
+                found: true,
+                directReplySent: true,
+                instruction: `We do not carry the ${args.kitType} kit for ${args.team}. However, the interactive kit list showing available kits (${availableTypes.join(', ')}) was delivered directly to the customer on WhatsApp.`
+              };
+              setCachedResult(args.idempotencyKey, res);
+              return res;
+            } catch (listErr) {
+              console.warn('[show_product] sendKitList alternative fallback:', listErr);
+            }
+
             const res: ShowProductResult = {
               found: false,
               instruction: `We do not currently have the ${args.team} ${args.kitType} kit in stock. However, we do have the ${availableTypes.join(', ')} kit(s). Inform the customer politely and ask if they would like to see one of those.`
@@ -659,6 +707,32 @@ export const toolHandlers = {
       }
 
       if (!jersey) {
+        const target = args.team ? `*${args.team}*` : 'that jersey';
+        const notFoundMsg = `😔 Sorry, we don't currently have ${target} in stock. Would you like to check out another club or league? ⚽`;
+        try {
+          const metaMessageId = await whatsappService.sendTextMessage(organizationId, {
+            toPhone: customerPhone,
+            body: notFoundMsg
+          });
+          await chatRepository.insertMessage(organizationId, {
+            conversationId,
+            metaMessageId,
+            direction: 'outbound',
+            type: 'text',
+            body: notFoundMsg,
+            deliveryStatus: 'sent'
+          });
+          const res: ShowProductResult = {
+            found: false,
+            directReplySent: true,
+            instruction: 'Deterministic not-found apology delivered to customer on WhatsApp.'
+          };
+          setCachedResult(args.idempotencyKey, res);
+          return res;
+        } catch (sendErr) {
+          console.warn('[show_product] not-found text send fallback:', sendErr);
+        }
+
         const res: ShowProductResult = {
           found: false,
           instruction: `No active jersey found for "${args.team}". Tell the customer we don't carry that club right now, and suggest our top available clubs (Premier League clubs, Real Madrid, Barcelona, PSG, Bayern Munich, Dortmund, Juventus, etc.).`
