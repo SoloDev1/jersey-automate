@@ -19,6 +19,7 @@ export interface AgentResult {
   toolsCalled: string[];
   models: string[];
   escalated: boolean;
+  executionMode: 'single_pass' | 'two_pass';
 }
 
 type ToolExecutor = (
@@ -44,7 +45,9 @@ const TOOL_EXECUTORS: Record<string, ToolExecutor> = {
   search_catalog: (c, a) =>
     toolHandlers.search_catalog(
       c.organizationId,
-      a as Parameters<typeof toolHandlers.search_catalog>[1]
+      c.conversationId,
+      c.customer.phoneNumber,
+      a as Parameters<typeof toolHandlers.search_catalog>[3]
     ),
   check_stock: (c, a) =>
     toolHandlers.check_stock(
@@ -197,12 +200,12 @@ export async function runAgentTurn(
   }
 
   if (!plan) {
-    return { text: null, ...snapshot(meter), toolsCalled, escalated };
+    return { text: null, ...snapshot(meter), toolsCalled, escalated, executionMode: 'single_pass' };
   }
 
   // ── Phase 2: Conversational reply without tools ──────────────────────────────
   if (evaluation.parsed.length === 0) {
-    return { text: plan.text, ...snapshot(meter), toolsCalled, escalated };
+    return { text: plan.text, ...snapshot(meter), toolsCalled, escalated, executionMode: 'single_pass' };
   }
 
   // ── Phase 3: Execute validated tools once with idempotency ──────────────────
@@ -231,7 +234,12 @@ export async function runAgentTurn(
     if (m.role === 'tool' && typeof m.content === 'string') {
       try {
         const parsed = JSON.parse(m.content) as Record<string, unknown>;
-        if (parsed.photoSent || parsed.checkoutCardSentAbove) {
+        if (
+          parsed.photoSent ||
+          parsed.checkoutCardSentAbove ||
+          parsed.listSent ||
+          parsed.catalogListSent
+        ) {
           uiCardDelivered = true;
           break;
         }
@@ -240,7 +248,7 @@ export async function runAgentTurn(
   }
 
   if (uiCardDelivered) {
-    return { text: null, ...snapshot(meter), toolsCalled, escalated };
+    return { text: null, ...snapshot(meter), toolsCalled, escalated, executionMode: 'single_pass' };
   }
 
   // ── Phase 4: Customer reply synthesis (LLM Call #2) ─────────────────────────
@@ -254,7 +262,7 @@ export async function runAgentTurn(
     meter.add(providers.smart, final);
   }
 
-  return { text: final.text, ...snapshot(meter), toolsCalled, escalated };
+  return { text: final.text, ...snapshot(meter), toolsCalled, escalated, executionMode: 'two_pass' };
 }
 
 function snapshot(m: UsageMeter) {

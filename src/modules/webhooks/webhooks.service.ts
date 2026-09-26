@@ -437,6 +437,11 @@ export const webhooksService = {
                   actionHandled = true;
                 } else {
                   const matchedSize = extractSizeFromText(trimmed);
+                  if (matchedSize) {
+                    await conversationStateService.updateState(organizationId, conversation.id, {
+                      size: matchedSize
+                    });
+                  }
                   let targetJerseyId = state.jerseyId;
 
                   // If state has no jerseyId, fall back to the most recent kit card sent in this thread

@@ -9,6 +9,7 @@ import { whatsappService } from '../whatsapp/whatsapp.service.js';
 import { whatsappCommerceService } from '../whatsapp/whatsapp-commerce.service.js';
 import { chatRepository } from '../chat/chat.repository.js';
 import { socketService } from '../../core/socket/socket.service.js';
+import { conversationStateService } from '../chat/conversation-state.service.js';
 
 // In-memory idempotency cache for mutating tool calls (TTL 10 mins, Max 2,000 entries)
 const mutatingToolCache = new Map<string, { result: unknown; timestamp: number }>();
@@ -58,10 +59,16 @@ function setCachedResult(idempotencyKey: string | undefined, result: unknown): v
 
 export interface SearchCatalogResult {
   found: boolean;
+  listSent?: boolean;
+  photoSent?: boolean;
   reason?: 'SPECIFIC_KIT_TYPE_UNAVAILABLE' | 'NOT_FOUND';
   requestedKitType?: string;
   availableKitTypes?: string[];
   team?: string;
+  jerseyId?: string;
+  title?: string;
+  kitType?: string;
+  price?: number;
   count?: number;
   jerseys?: Array<{
     id: string;
@@ -168,12 +175,12 @@ export const AI_TOOLS: ToolDefinition[] = [
     }
   },
 
-  // ── 2. READ TOOL: search_catalog (Side-effect free) ─────────────────────────
+  // ── 2. CATALOG DISCOVERY: search_catalog (Direct WhatsApp UI) ────────────
   {
     type: 'function',
     function: {
       name: 'search_catalog',
-      description: 'Side-effect free catalog search. Finds matching football jerseys by club, team, kit type, or league. Does NOT send WhatsApp media.',
+      description: 'Searches catalog and automatically delivers an interactive WhatsApp kit list (for multiple kits) or kit card to the customer. Use for general team or catalog inquiries (e.g. "Madrid", "Arsenal jerseys", "What kits are available").',
       parameters: {
         type: 'object',
         properties: {
@@ -350,6 +357,8 @@ export const toolHandlers = {
    */
   async search_catalog(
     organizationId: string,
+    conversationId: string,
+    customerPhone: string,
     filter: {
       team?: string;
       kitType?: string;
@@ -373,15 +382,44 @@ export const toolHandlers = {
 
     const result = await catalogService.getCatalog(organizationId, searchParams);
 
+    // Case 1: Specific requested kitType not found, but other kits exist for this team
     if (result.data.length === 0) {
       if (effectiveTeam && effectiveKitType) {
         const teamCheck = await catalogService.getCatalog(organizationId, {
           team: effectiveTeam,
+          inStock: true,
           limit: 5
         });
 
         if (teamCheck.data.length > 0) {
           const availableTypes = [...new Set(teamCheck.data.map((j) => j.kitType))];
+          const teamJerseys = teamCheck.data;
+          const teamName = teamJerseys[0].team;
+
+          // Dispatch interactive kit list for available kits directly
+          try {
+            await whatsappCommerceService.sendKitList(organizationId, conversationId, {
+              toPhone: customerPhone,
+              team: teamName,
+              jerseys: teamJerseys
+            });
+            await conversationStateService.updateState(organizationId, conversationId, {
+              stage: 'selecting_kit',
+              team: teamName
+            });
+            return {
+              found: true,
+              listSent: true,
+              count: teamJerseys.length,
+              team: teamName,
+              requestedKitType: effectiveKitType,
+              availableKitTypes: availableTypes,
+              instruction: `The ${effectiveKitType} kit was unavailable, but the interactive WhatsApp kit list showing available kits (${availableTypes.join(', ')}) was delivered above to the customer.`
+            };
+          } catch (listErr: unknown) {
+            console.warn('[search_catalog] sendKitList fallback:', listErr);
+          }
+
           return {
             found: false,
             reason: 'SPECIFIC_KIT_TYPE_UNAVAILABLE',
@@ -401,6 +439,72 @@ export const toolHandlers = {
       };
     }
 
+    // Case 2: Exactly 1 jersey matched (single kit card)
+    if (result.data.length === 1) {
+      const singleJersey = result.data[0];
+      try {
+        const setting = await prisma.setting.findUnique({
+          where: { organizationId },
+          select: { currency: true }
+        });
+        const currency = setting?.currency || 'NGN';
+
+        await whatsappCommerceService.sendJerseyCard(organizationId, conversationId, {
+          toPhone: customerPhone,
+          jersey: singleJersey,
+          currency
+        });
+
+        await conversationStateService.updateState(organizationId, conversationId, {
+          stage: 'viewing_product',
+          jerseyId: singleJersey.id,
+          team: singleJersey.team,
+          kitType: singleJersey.kitType
+        });
+
+        return {
+          found: true,
+          photoSent: true,
+          count: 1,
+          jerseyId: singleJersey.id,
+          title: singleJersey.title,
+          team: singleJersey.team,
+          kitType: singleJersey.kitType,
+          price: singleJersey.basePrice,
+          instruction: `The official photo card for ${singleJersey.title} has been delivered directly to the customer above! Single-pass UI handles presentation.`
+        };
+      } catch (cardErr: unknown) {
+        console.warn('[search_catalog] sendJerseyCard fallback:', cardErr);
+      }
+    }
+
+    // Case 3: Multiple jerseys matched (multi-kit interactive list)
+    const jerseys = result.data;
+    const teamName = effectiveTeam || jerseys[0].team;
+    try {
+      await whatsappCommerceService.sendKitList(organizationId, conversationId, {
+        toPhone: customerPhone,
+        team: teamName,
+        jerseys
+      });
+
+      await conversationStateService.updateState(organizationId, conversationId, {
+        stage: 'selecting_kit',
+        team: teamName
+      });
+
+      return {
+        found: true,
+        listSent: true,
+        count: jerseys.length,
+        team: teamName,
+        instruction: `The interactive WhatsApp kit list for ${teamName} has been delivered directly to the customer above! Single-pass UI handles presentation.`
+      };
+    } catch (listErr: unknown) {
+      console.warn('[search_catalog] sendKitList fallback:', listErr);
+    }
+
+    // Fallback: If WhatsApp interactive send failed, return structured jerseys for LLM text synthesis
     return {
       found: true,
       count: result.data.length,

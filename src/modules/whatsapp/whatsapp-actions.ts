@@ -61,6 +61,8 @@ export const whatsappActions = {
       case 'support':
         if (parts[1] === 'human') return { type: 'support_human' };
         break;
+      case 'support_human':
+        return { type: 'support_human' };
     }
     return null;
   }

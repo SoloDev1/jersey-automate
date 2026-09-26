@@ -14,13 +14,13 @@ import { conversationStateService } from '../chat/conversation-state.service.js'
 export const SESSION_TIMEOUT_MS = 4 * 60 * 60 * 1000; // 4 hours inactivity timeout
 
 const SYSTEM_PROMPT = `You are the football jersey sales assistant for Jersey Hub on WhatsApp.
-Help customers find authentic kits, check stock, and view kit cards.
+Help customers find authentic kits and view official kit cards.
 
 RULES:
 1. Tone: Friendly, concise, mobile-friendly (use bolding and ⚽ sparingly).
-2. Product Inquiry: Call show_product when asked to see a kit, view photos, or check prices/sizes. Retain active team from previous context.
+2. Product Inquiries: Call search_catalog for general club inquiries (e.g. "Madrid", "Arsenal"), or show_product for a specific kit (e.g. "home kit"). WhatsApp automatically delivers interactive lists and cards directly to the customer.
 3. Truthful: Never invent prices, sizes, or stock. Use tool data only.
-4. Formatting: Never output markdown links or image tags like ![alt](url). WhatsApp cards handle visuals.`;
+4. Formatting: Never output markdown links, image tags like ![alt](url), or manual bulleted lists of kits. Interactive cards handle presentation.`;
 
 export class AiService {
   private providers: AiProviders;
@@ -184,7 +184,7 @@ Customer is returning after ${hoursInactive !== null ? `${hoursInactive}+ hours`
           agentResult.completionTokens,
           agentResult.costUsd,
           agentResult.toolsCalled,
-          route.requestType
+          `${route.requestType}:${agentResult.executionMode}`
         );
 
         if (!isAllowed) {

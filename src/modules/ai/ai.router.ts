@@ -142,7 +142,7 @@ export function routeMessage(input: RouteInput): RouteDecision {
       tier: 'smart',
       reason: 'customer_complaint',
       requestType: 'product_question',
-      allowedTools: ['show_product', 'search_catalog', 'check_stock']
+      allowedTools: ['show_product', 'search_catalog']
     };
   }
 
@@ -152,6 +152,6 @@ export function routeMessage(input: RouteInput): RouteDecision {
     tier: 'fast',
     reason: 'standard_catalog_inquiry',
     requestType: 'product_discovery',
-    allowedTools: ['show_product', 'search_catalog', 'check_stock', 'create_checkout']
+    allowedTools: ['show_product', 'search_catalog']
   };
 }

@@ -533,7 +533,7 @@ export const whatsappCommerceService = {
     // 4. Initialize Paystack Transaction
     let paymentInit: { authorizationUrl: string; accessCode: string; reference: string };
     try {
-      const customerEmail = `${options.customerPhone.replace(/\+/g, '')}@whatsapp.customer`;
+      const customerEmail = `${options.customerPhone.replace(/\+/g, '')}@whatsapp.com`;
       paymentInit = await paymentsService.initializePayment(
         organizationId,
         order.id,
