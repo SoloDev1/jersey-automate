@@ -6,8 +6,11 @@ export type ShoppingStage =
   | 'selecting_kit'
   | 'viewing_product'
   | 'selecting_size'
+  | 'collecting_delivery_address'
   | 'confirming_order'
   | 'awaiting_payment'
+  | 'awaiting_delivery_address'
+  | 'order_confirmed'
   | 'completed';
 
 /**
@@ -23,6 +26,8 @@ export interface ConversationState {
   kitType?: string;
   size?: string;
   quantity?: number;
+  fulfillmentMethod?: 'delivery' | 'pickup';
+  shippingAddress?: string;
   orderId?: string;
   orderNumber?: number;
   updatedAt: number;

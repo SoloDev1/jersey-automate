@@ -52,6 +52,7 @@ const CLUB_ALIASES: Record<string, string> = {
   'paris saint-germain': 'Paris Saint-Germain',
   wolves: 'Wolverhampton Wanderers',
   newcastle: 'Newcastle United',
+  aston: 'Aston Villa',
   villa: 'Aston Villa',
   'aston villa': 'Aston Villa'
 };

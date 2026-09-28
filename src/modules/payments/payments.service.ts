@@ -414,6 +414,15 @@ export const paymentsService = {
           body: receiptMessage,
           deliveryStatus: 'sent'
         });
+
+        // Update commerce state so follow-up message with delivery address is properly handled
+        const { conversationStateService } = await import('../chat/conversation-state.service.js');
+        const needsAddress = !isPickup && (!order.shippingAddress || order.shippingAddress.trim() === '' || order.shippingAddress === 'Store Pickup');
+        await conversationStateService.updateState(order.organizationId, conversation.id, {
+          stage: needsAddress ? 'awaiting_delivery_address' : 'order_confirmed',
+          orderId: order.id,
+          orderNumber: order.orderNumber
+        });
       } catch (notifyErr: unknown) {
         const msg = notifyErr instanceof Error ? notifyErr.message : String(notifyErr);
         console.warn(

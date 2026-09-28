@@ -188,41 +188,14 @@ export class AiService {
           });
           return;
         } else {
-          // NO_MATCH in catalog
-          if (route.isFollowUpAnswer) {
-            // Customer was answering "Which club?" but team is not in catalog
-            const popularTeams = await catalogMatcher.getPopularActiveTeams(organizationId, 3);
-            await whatsappCommerceService.sendPopularClubsList(organizationId, conversationId, {
-              toPhone: customer.phoneNumber,
-              query: route.query,
-              popularTeams
-            });
-            return;
-          } else {
-            // Standalone short candidate query was not found in catalog -> store clarification
-            const responseBody =
-              dynamicRouteContext.clarificationMessage?.trim() ||
-              `⚽ I can help you find products, check available sizes, or track an order at ${storeSettings.storeName}! What are you looking for today?`;
-
-            const metaMessageId = await whatsappService.sendTextMessage(organizationId, {
-              toPhone: customer.phoneNumber,
-              body: responseBody
-            });
-
-            const savedMessage = await chatRepository.insertMessage(organizationId, {
-              conversationId,
-              metaMessageId,
-              direction: 'outbound',
-              type: 'text',
-              body: responseBody,
-              deliveryStatus: 'sent'
-            });
-
-            if (savedMessage) {
-              socketService.emitNewMessage(organizationId, savedMessage);
-            }
-            return;
-          }
+          // NO_MATCH in catalog -> offer popular active clubs rather than robotic clarification
+          const popularTeams = await catalogMatcher.getPopularActiveTeams(organizationId, 3);
+          await whatsappCommerceService.sendPopularClubsList(organizationId, conversationId, {
+            toPhone: customer.phoneNumber,
+            query: route.query,
+            popularTeams
+          });
+          return;
         }
       }
 

@@ -117,13 +117,13 @@ export function isOutOfScopeQuery(text: string): boolean {
  * Ensures short queries like "Madrid", "Arsenal", or "Chelsea" route to product discovery.
  */
 const FOOTBALL_TEAMS_PATTERN =
-  /\b(arsenal|chelsea|liverpool|manchester\s*united|man\s*utd|man\s*united|man\s*city|manchester\s*city|tottenham|spurs|newcastle|aston\s*villa|west\s*ham|everton|brighton|wolves|leicester|real\s*madrid|madrid|barcelona|barca|barça|atletico(\s*madrid)?|sevilla|valencia|juventus|juve|inter(\s*milan)?|ac\s*milan|milan|napoli|roma|lazio|bayern(\s*munich)?|dortmund|borussia\s*dortmund|leverkusen|psg|paris\s*saint-germain|marseille|ajax|benfica|sporting|porto|al\s*nassr|inter\s*miami|nigeria|super\s*eagles|brazil|argentina|france|england|portugal|germany|spain|italy|netherlands|holland|world\s*cup|champions\s*league|premier\s*league|la\s*liga|serie\s*a)\b/i;
+  /\b(arsenal|chelsea|liverpool|manchester\s*united|man\s*utd|man\s*united|man\s*city|manchester\s*city|tottenham|spurs|newcastle|aston(\s*villa)?|villa|west\s*ham|everton|brighton|wolves|leicester|real\s*madrid|madrid|barcelona|barca|barça|atletico(\s*madrid)?|sevilla|valencia|juventus|juve|inter(\s*milan)?|ac\s*milan|milan|napoli|roma|lazio|bayern(\s*munich)?|dortmund|borussia\s*dortmund|leverkusen|psg|paris\s*saint-germain|marseille|ajax|benfica|sporting|porto|al\s*nassr|inter\s*miami|nigeria|super\s*eagles|brazil|argentina|france|england|portugal|germany|spain|italy|netherlands|holland|world\s*cup|champions\s*league|premier\s*league|la\s*liga|serie\s*a)\b/i;
 
 /**
  * Core football jersey shopping keywords and Nigerian shopping phrasing.
  */
 const SHOPPING_INTENT_PATTERN =
-  /\b(jersey|jerseys|kits?|football kit|home kit|away kit|third kit|player version|fan version|retro kit|retro|tracksuit|shirt|shirts?|size\s*[smlx0-9]+|small|medium|large|xl|xxl|2xl|3xl|price|prices|cost|how much|stock|available|availability|in stock|buy|purchase|order|catalogue|catalog|delivery|shipping|custom print|printing|abeg|una get|wetin be the price|how much last)\b/i;
+  /\b(jersey|jerseys|kits?|football kit|home kit|away kit|third kit|player version|fan version|retro kit|retro|tracksuit|shirt|shirts?|size\s*[smlx0-9]+|small|medium|large|xl|xxl|2xl|3xl|price|prices|cost|how much|stock|available|availability|in stock|buy|purchase|order|catalogue|catalog|delivery|shipping|custom print|printing|abeg|do\s+(you|una)\s+(have|get)|have\s+you\s+got|got\s+any|una\s+get|wetin be the price|how much last)\b/i;
 
 export interface DynamicRouteContext {
   storeName?: string;
@@ -140,14 +140,14 @@ function escapeRegExp(str: string): string {
 }
 
 /**
- * Strips conversational filler and affirmations from a customer's message
- * to cleanly isolate the club or search entity (e.g., "Yes hull" -> "hull").
+ * Strips conversational filler, affirmations, and availability phrasing from a customer's message
+ * to cleanly isolate the club or search entity (e.g., "Do you have Aston" -> "Aston", "Yes hull" -> "hull").
  */
 export function extractTeamQuery(rawText: string): string {
   return rawText
     .trim()
     .replace(
-      /^(yes|yeah|yep|sure|ok|okay|i want|give me|show me|how about|what of|wetin about|abeg|do you have|got any)\s+/i,
+      /^(yes|yeah|yep|sure|ok|okay|i want|give me|show me|how about|what of|wetin about|abeg|do\s+(you|una)\s+(have|get)|have\s+you\s+got|got\s+any|any)\s+/i,
       ''
     )
     .replace(/\s+(please|abeg|biko)$/i, '')
@@ -199,6 +199,27 @@ export function routeMessage(
         type: 'out_of_scope',
         reason: rule.reason,
         redirectMessage
+      };
+    }
+  }
+
+  // 1.4 State Check: Awaiting Delivery Address (Pre-payment or Post-payment)
+  if (
+    normInput.conversationState?.stage === 'awaiting_delivery_address' ||
+    normInput.conversationState?.stage === 'collecting_delivery_address'
+  ) {
+    const isInterruptionQuestion =
+      /^(how\s+(long|much|many)|can\s+i|what\s+if|do\s+you|where\s+is|when\s+will|is\s+delivery|why)\b/i.test(
+        trimmed
+      ) || trimmed.endsWith('?');
+
+    if (!isInterruptionQuestion && trimmed.length >= 3) {
+      return {
+        type: 'agent',
+        tier: 'fast',
+        reason: 'delivery_address_submission',
+        requestType: 'support_or_address',
+        allowedTools: ['update_order_shipping_address', 'check_order_status']
       };
     }
   }
@@ -353,29 +374,32 @@ export function routeMessage(
     };
   }
 
-  // 7.5 Potential Team / Club Catalog Queries (e.g. "Hull City", "Hull", "Ipswich", "Galatasaray")
+  // 7.5 Potential Team / Club Catalog Queries (e.g. "Aston", "Hull City", "Hull", "Ipswich", "Galatasaray", "Do you have Aston")
   // Allows database catalog lookup to dynamically match clubs without regex limitation
+  const isAvailabilityQuery =
+    /^(do\s+(you|una)\s+(have|get)|have\s+you\s+got|got\s+any|any)\b/i.test(trimmed);
+
   const isConversationalSentence =
+    !isAvailabilityQuery &&
     /^(i|you|he|she|it|we|they|this|that|there|is|are|was|were|am|do|does|did|can|could|would|should)\b/i.test(
       trimmed
     );
 
+  const normalizedCandidate = extractTeamQuery(trimmed);
+
   const isShortCandidate =
     !isConversationalSentence &&
-    trimmed.split(/\s+/).length <= 3 &&
-    /^[a-zA-Z0-9\s'-]+$/.test(trimmed);
+    normalizedCandidate.split(/\s+/).length <= 3 &&
+    /^[a-zA-Z0-9\s'-]+$/.test(normalizedCandidate);
 
-  if (isShortCandidate) {
-    const normalizedCandidate = extractTeamQuery(trimmed);
-    if (normalizedCandidate.length >= 2) {
-      return {
-        type: 'team_selection',
-        reason: 'short_potential_team_query',
-        query: normalizedCandidate,
-        originalMessage: trimmed,
-        isFollowUpAnswer: false
-      };
-    }
+  if (isShortCandidate && normalizedCandidate.length >= 2) {
+    return {
+      type: 'team_selection',
+      reason: 'short_potential_team_query',
+      query: normalizedCandidate,
+      originalMessage: trimmed,
+      isFollowUpAnswer: isAvailabilityQuery
+    };
   }
 
   // 8. Safe Fallback: Clarification within Store Scope (Zero LLM Overhead)

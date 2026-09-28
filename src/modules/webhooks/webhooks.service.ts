@@ -523,6 +523,59 @@ export const webhooksService = {
                       body: `✅ Quantity set to *${parsedQty}*. Which size would you like to order?`
                     });
                   }
+
+                  // Contextual Delivery Address Capture (Pre-payment & Post-payment)
+                  if (!actionHandled && (state.stage === 'awaiting_delivery_address' || state.stage === 'collecting_delivery_address')) {
+                    const isInterruptionQuestion =
+                      /^(how\s+(long|much|many)|can\s+i|what\s+if|do\s+you|where\s+is|when\s+will|is\s+delivery|why)\b/i.test(trimmed) ||
+                      trimmed.endsWith('?');
+
+                    if (!isInterruptionQuestion && body.trim().length >= 3) {
+                      const addressText = body.trim();
+
+                      if (state.stage === 'awaiting_delivery_address') {
+                        // Post-payment address capture
+                        const orderIdentifier = state.orderNumber ? String(state.orderNumber) : state.orderId;
+                        await ordersRepository.updateOrderAddressAndNotes({
+                          organizationId,
+                          customerId: customer.id,
+                          conversationId: conversation.id,
+                          orderIdentifier,
+                          shippingAddress: addressText
+                        });
+
+                        await conversationStateService.updateState(organizationId, conversation.id, {
+                          stage: 'order_confirmed',
+                          shippingAddress: addressText
+                        });
+
+                        actionHandled = true;
+                        const orderNumStr = state.orderNumber ? ` #${state.orderNumber}` : '';
+                        await whatsappService.sendTextMessage(organizationId, {
+                          toPhone: fromPhone,
+                          body: `📍 *Delivery address confirmed!* 🚚\n\nWe have saved your delivery address for Order${orderNumStr}:\n🏠 *${addressText}*\n\nOur courier dispatch team has been notified. We will update you here once your package is on the way! ⚽`
+                        });
+                      } else if (state.stage === 'collecting_delivery_address') {
+                        // Pre-payment address capture -> proceed to Paystack checkout
+                        if (state.jerseyId && state.size) {
+                          actionHandled = true;
+                          await conversationStateService.updateState(organizationId, conversation.id, {
+                            shippingAddress: addressText
+                          });
+
+                          const { whatsappCommerceService } = await import('../whatsapp/whatsapp-commerce.service.js');
+                          await whatsappCommerceService.executeCheckout(organizationId, conversation.id, {
+                            customerPhone: fromPhone,
+                            jerseyId: state.jerseyId,
+                            size: state.size as JerseySize,
+                            quantity: state.quantity || 1,
+                            fulfillmentMethod: 'delivery',
+                            shippingAddress: addressText
+                          });
+                        }
+                      }
+                    }
+                  }
                 }
               }
 

@@ -133,12 +133,32 @@ export const interactiveActionRouter = {
         }
 
         case 'fulfillment': {
+          if (action.method === 'delivery') {
+            await conversationStateService.updateState(organizationId, conversationId, {
+              stage: 'collecting_delivery_address',
+              jerseyId: action.jerseyId,
+              size: action.size,
+              quantity: 1,
+              fulfillmentMethod: 'delivery'
+            });
+
+            const jersey = await catalogService.getJersey(organizationId, action.jerseyId);
+            const jerseyName = jersey ? jersey.title : 'your kit';
+
+            await whatsappService.sendTextMessage(organizationId, {
+              toPhone,
+              body: `🚚 *Doorstep Delivery (NGN 2,000)* selected for *${jerseyName}* (Size *${action.size}*)!\n\nPlease reply with your delivery address & city (e.g. *1b Egbede Lane, Ikeja, Lagos*) so we can prepare your order and checkout link. 📦`
+            });
+            return true;
+          }
+
           await whatsappCommerceService.executeCheckout(organizationId, conversationId, {
             customerPhone: toPhone,
             jerseyId: action.jerseyId,
             size: action.size,
             quantity: 1,
-            fulfillmentMethod: action.method
+            fulfillmentMethod: 'pickup',
+            shippingAddress: 'Store Pickup'
           });
           return true;
         }

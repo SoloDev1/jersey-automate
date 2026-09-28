@@ -139,7 +139,7 @@ async function syncToNeonStorage() {
     update: {},
     create: {
       organizationId: DEFAULT_ORGANIZATION_ID,
-      storeName: 'Jersey Store MVP',
+      storeName: 'Jersey Hub',
       currency: 'NGN',
       defaultShippingFee: 2000.00,
       customPrintingFee: 3000.00

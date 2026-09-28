@@ -17,6 +17,31 @@ export const POPULAR_CLUBS = [
   'Liverpool'
 ];
 
+function levenshteinDistance(a: string, b: string): number {
+  const an = a.length;
+  const bn = b.length;
+  if (an === 0) return bn;
+  if (bn === 0) return an;
+  const matrix: number[][] = [];
+  for (let i = 0; i <= bn; i++) matrix[i] = [i];
+  for (let j = 0; j <= an; j++) matrix[0][j] = j;
+
+  for (let i = 1; i <= bn; i++) {
+    for (let j = 1; j <= an; j++) {
+      if (b[i - 1] === a[j - 1]) {
+        matrix[i][j] = matrix[i - 1][j - 1];
+      } else {
+        matrix[i][j] = Math.min(
+          matrix[i - 1][j - 1] + 1,
+          matrix[i][j - 1] + 1,
+          matrix[i - 1][j] + 1
+        );
+      }
+    }
+  }
+  return matrix[bn][an];
+}
+
 export const catalogMatcher = {
   /**
    * Matches a raw user team query against the active catalog.
@@ -79,7 +104,48 @@ export const catalogMatcher = {
       }
     }
 
-    // 4. Evaluate disambiguation outcome
+    // 4. Fuzzy typo matching (e.g. "aton" -> "Aston Villa", "arsnal" -> "Arsenal")
+    if (candidateTeams.length === 0 && trimmed.length >= 3) {
+      const allActiveJerseys = await prisma.jersey.findMany({
+        where: { organizationId, isActive: true },
+        select: { team: true },
+        distinct: ['team']
+      });
+
+      const queryLower = trimmed.toLowerCase();
+      const scoredCandidates: Array<{ team: string; score: number }> = [];
+
+      for (const item of allActiveJerseys) {
+        const teamName = item.team;
+        const teamLower = teamName.toLowerCase();
+
+        // Check full team name similarity
+        const fullDist = levenshteinDistance(queryLower, teamLower);
+        const maxLen = Math.max(queryLower.length, teamLower.length);
+        const fullScore = 1 - fullDist / maxLen;
+
+        // Check each word in the team name (e.g., "aton" vs "Aston")
+        let bestTokenScore = 0;
+        const teamTokens = teamLower.split(/\s+/);
+        for (const token of teamTokens) {
+          if (token.length >= 3) {
+            const tokenDist = levenshteinDistance(queryLower, token);
+            const tokenScore = 1 - tokenDist / Math.max(queryLower.length, token.length);
+            if (tokenScore > bestTokenScore) bestTokenScore = tokenScore;
+          }
+        }
+
+        const maxScore = Math.max(fullScore, bestTokenScore);
+        if (maxScore >= 0.70 || (queryLower.length >= 4 && bestTokenScore >= 0.65)) {
+          scoredCandidates.push({ team: teamName, score: maxScore });
+        }
+      }
+
+      scoredCandidates.sort((a, b) => b.score - a.score);
+      candidateTeams = scoredCandidates.map((c) => c.team);
+    }
+
+    // 5. Evaluate disambiguation outcome
     if (candidateTeams.length === 0) {
       return {
         matchType: 'NO_MATCH',
