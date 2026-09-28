@@ -356,8 +356,8 @@ export const paymentsService = {
         const { chatRepository } = await import('../chat/chat.repository.js');
 
         const itemsSummary = (order.items || [])
-          .map((i) => `• *${i.jerseyTitle || 'Jersey'}* (Size: *${i.size}*, Qty: ${i.quantity})`)
-          .join('\n');
+          .map((i) => `• ${i.jerseyTitle || 'Jersey'}\n   Size ${i.size}  |  Qty ${i.quantity}`)
+          .join('\n\n');
 
         const formattedAmount = new Intl.NumberFormat('en-US', {
           style: 'currency',
@@ -371,30 +371,31 @@ export const paymentsService = {
           Boolean(order.notes?.includes('Store Pickup'));
 
         const fulfillmentLine = isPickup
-          ? `• *Fulfillment:* Store Pickup (Free)`
-          : `• *Fulfillment:* Doorstep Delivery (${order.currency} ${Number(order.shippingFee).toLocaleString()})`;
+          ? `🏬 Store Pickup (Free)`
+          : `🚚 Doorstep Delivery (${order.currency} ${Number(order.shippingFee).toLocaleString()})`;
 
         const nextSteps = isPickup
-          ? `📦 *Collection Details:*\nYour order is now being prepped at our store hub! When you come for pickup, simply show your order number: *#${order.orderNumber}* ⚽`
+          ? `📦 *Collection Details*\nYour order is being prepped at our store hub.\nShow your order number when you come: *#${order.orderNumber}* ⚽`
           : order.shippingAddress && order.shippingAddress !== 'Store Pickup'
-          ? `📦 *What happens next?*\nYour kit is being prepped for dispatch to:\n*${order.shippingAddress}*\nWe will notify you here once the courier picks it up! 🚚`
-          : `📦 *What happens next?*\nPayment confirmed! Please reply with your delivery address & city so our courier can dispatch your kit. 🚚`;
+          ? `📦 *What happens next?*\nYour kit is being prepped for dispatch to:\n\n📍 *${order.shippingAddress}*\n\nWe'll notify you here once the courier picks it up! 🚚`
+          : `📦 *What happens next?*\nPlease reply with your delivery address & city so our courier can dispatch your kit. 🚚`;
 
-        const receiptMessage = [
-          `🎉 *PAYMENT CONFIRMED!*`,
-          ``,
-          `Thank you${customerGreeting}! We have received your payment of *${formattedAmount}*.`,
-          ``,
-          `📋 *Order Summary:*`,
-          `• *Order Number:* #${order.orderNumber}`,
-          `• *Payment Status:* Paid via ${data.channel || 'Paystack'} ✅`,
-          fulfillmentLine,
-          itemsSummary ? `\n*Items Ordered:*\n${itemsSummary}` : '',
-          ``,
+        const sections = [
+          `🎉 *PAYMENT CONFIRMED!*\n\nThank you${customerGreeting}! We've received your payment of *${formattedAmount}*.`,
+
+          [
+            `📋 *Order Summary*`,
+            `Order No: *#${order.orderNumber}*`,
+            `Payment: Paid via ${data.channel || 'Paystack'} ✅`,
+            `Fulfillment: ${fulfillmentLine}`
+          ].join('\n'),
+
+          itemsSummary ? `🛍️ *Items Ordered*\n${itemsSummary}` : '',
+
           nextSteps
-        ]
-          .filter(Boolean)
-          .join('\n');
+        ];
+
+        const receiptMessage = sections.filter(Boolean).join('\n\n');
 
         const metaMessageId = await whatsappService.sendTextMessage(order.organizationId, {
           toPhone: order.customerPhone,
