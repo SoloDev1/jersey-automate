@@ -275,7 +275,88 @@ export const whatsappCommerceService = {
   },
 
   /**
-   * Sends an official order reservation card with Paystack checkout link.
+   * Sends a clean, uncluttered fulfillment selector card (Doorstep Delivery vs Free Store Pickup).
+   */
+  async sendFulfillmentPicker(
+    organizationId: string,
+    conversationId: string,
+    options: {
+      toPhone: string;
+      jersey: JerseyRecord;
+      size: JerseySize;
+      currency?: string;
+    }
+  ): Promise<string> {
+    const { jersey, size, toPhone } = options;
+    const settings = await prisma.setting.findUnique({
+      where: { organizationId },
+      select: { defaultShippingFee: true, currency: true }
+    });
+    const currency = options.currency || settings?.currency || 'NGN';
+    const deliveryFee = Number(settings?.defaultShippingFee ?? 2000);
+
+    const formattedPrice = new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency,
+      maximumFractionDigits: 0
+    }).format(jersey.basePrice);
+
+    const formattedFee = new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency,
+      maximumFractionDigits: 0
+    }).format(deliveryFee);
+
+    const bodyText = [
+      `*${jersey.title} (Size ${size})*`,
+      `Price: *${formattedPrice}*`,
+      ``,
+      `How would you like to receive your kit?`,
+      `• 🚚 *Delivery:* ${formattedFee} (2–4 days)`,
+      `• 🏬 *Store Pickup:* Free`
+    ].join('\n');
+
+    const messageId = await whatsappService.sendInteractiveMessage(organizationId, {
+      toPhone,
+      body: bodyText,
+      footer: 'Tap an option to proceed to payment',
+      action: {
+        type: 'button',
+        buttons: [
+          {
+            id: whatsappActions.buildFulfillment('delivery', jersey.id, size),
+            title: `🚚 Delivery (${formattedFee})`.slice(0, 20)
+          },
+          {
+            id: whatsappActions.buildFulfillment('pickup', jersey.id, size),
+            title: '🏬 Free Pickup'
+          }
+        ]
+      }
+    });
+
+    const savedMessage = await chatRepository.insertMessage(organizationId, {
+      conversationId,
+      metaMessageId: messageId,
+      direction: 'outbound',
+      type: 'text',
+      body: `[Fulfillment Choice sent: Delivery vs Pickup for ${jersey.title} (Size ${size})]`,
+      deliveryStatus: 'sent'
+    });
+
+    if (savedMessage) {
+      socketService.emitNewMessage(organizationId, savedMessage);
+      const updatedConv = await chatRepository.getConversationById(organizationId, conversationId);
+      if (updatedConv) {
+        socketService.emitConversationUpdated(organizationId, updatedConv);
+      }
+    }
+
+    return messageId;
+  },
+
+  /**
+   * Sends an uncluttered, official order reservation card with transparent breakdown and Paystack CTA.
    */
   async sendCheckoutCard(
     organizationId: string,
@@ -288,32 +369,72 @@ export const whatsappCommerceService = {
       totalAmount: number;
       currency: string;
       paymentUrl: string;
+      subtotal?: number;
+      shippingFee?: number;
+      fulfillmentMethod?: 'delivery' | 'pickup';
     }
   ): Promise<string> {
     const { toPhone, orderNumber, jerseyTitle, size, totalAmount, currency, paymentUrl } = options;
-    const formattedAmount = new Intl.NumberFormat('en-US', {
+
+    const isPickup =
+      options.fulfillmentMethod === 'pickup' ||
+      (options.shippingFee !== undefined && options.shippingFee === 0);
+
+    const subtotal =
+      options.subtotal !== undefined
+        ? options.subtotal
+        : options.shippingFee !== undefined
+        ? totalAmount - options.shippingFee
+        : totalAmount;
+
+    const shippingFee =
+      options.shippingFee !== undefined
+        ? options.shippingFee
+        : isPickup
+        ? 0
+        : totalAmount - subtotal;
+
+    const formattedTotal = new Intl.NumberFormat('en-US', {
       style: 'currency',
-      currency
+      currency,
+      maximumFractionDigits: 0
     }).format(totalAmount);
 
-    const bodyText = [
-      `🧾 *ORDER RESERVED: #${orderNumber}*`,
+    const formattedSubtotal = new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency,
+      maximumFractionDigits: 0
+    }).format(subtotal);
+
+    const formattedShipping = new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency,
+      maximumFractionDigits: 0
+    }).format(shippingFee);
+
+    // Clean, modern, uncluttered body
+    const lines = [
+      `*Order Reserved #${orderNumber}*`,
       ``,
-      `⚽ *${jerseyTitle}*`,
-      `📏 Size: *${size}*`,
-      `💰 Total: *${formattedAmount}*`,
-      ``,
-      `⏳ *Stock Hold:* Reserved for *15 minutes*.`,
-      `💳 Tap below to complete your payment:`
-    ].join('\n');
+      `${jerseyTitle} (Size ${size})`,
+      `• Kit: ${formattedSubtotal}`,
+      isPickup ? `• Store Pickup: Free` : `• Delivery: ${formattedShipping}`,
+      `• *Total: ${formattedTotal}*`,
+      isPickup ? `\n📍 Pickup at Store Hub (Mon–Sat 9AM–6PM)` : ``
+    ].filter(Boolean);
+
+    const bodyText = lines.join('\n');
+
+    // Display total price directly on CTA button (e.g. "💳 Pay ₦22,000")
+    const buttonText = `💳 Pay ${formattedTotal}`.slice(0, 20);
 
     const messageId = await whatsappService.sendInteractiveMessage(organizationId, {
       toPhone,
       body: bodyText,
-      footer: 'Secured by Paystack',
+      footer: 'Hold: 15 mins • Secured by Paystack',
       action: {
         type: 'cta_url',
-        displayText: '💳 Pay Now',
+        displayText: buttonText,
         url: paymentUrl
       }
     });
@@ -393,6 +514,7 @@ export const whatsappCommerceService = {
       customName?: string;
       customNumber?: string;
       shippingAddress?: string;
+      fulfillmentMethod?: 'delivery' | 'pickup';
     }
   ): Promise<{ order: OrderRecord; paymentUrl: string; isExisting: boolean }> {
     const quantity = options.quantity && options.quantity > 0 ? options.quantity : 1;
@@ -480,9 +602,12 @@ export const whatsappCommerceService = {
         orderNumber: existingActiveOrder.orderNumber,
         jerseyTitle: existingActiveOrder.orderItems[0]?.jersey?.title || 'Jersey',
         size: options.size,
+        subtotal: Number(existingActiveOrder.subtotal),
+        shippingFee: Number(existingActiveOrder.shippingFee),
         totalAmount: Number(existingActiveOrder.totalAmount),
         currency: existingActiveOrder.currency,
-        paymentUrl: existingActiveOrder.paymentUrl
+        paymentUrl: existingActiveOrder.paymentUrl,
+        fulfillmentMethod: Number(existingActiveOrder.shippingFee) === 0 ? 'pickup' : 'delivery'
       });
 
       return {
@@ -519,6 +644,7 @@ export const whatsappCommerceService = {
     const order = await ordersService.createOrder(organizationId, {
       customerPhone: options.customerPhone,
       shippingAddress: options.shippingAddress,
+      fulfillmentMethod: options.fulfillmentMethod,
       items: [
         {
           jerseyId: options.jerseyId,
@@ -565,9 +691,12 @@ export const whatsappCommerceService = {
       orderNumber: order.orderNumber,
       jerseyTitle: jersey.title,
       size: options.size,
+      subtotal: order.subtotal,
+      shippingFee: order.shippingFee,
       totalAmount: order.totalAmount,
       currency: order.currency,
-      paymentUrl: paymentInit.authorizationUrl
+      paymentUrl: paymentInit.authorizationUrl,
+      fulfillmentMethod: options.fulfillmentMethod
     });
 
     return {

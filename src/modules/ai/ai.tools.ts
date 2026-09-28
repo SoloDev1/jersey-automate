@@ -318,6 +318,11 @@ export const AI_TOOLS: ToolDefinition[] = [
           shippingAddress: {
             type: 'string',
             description: 'Optional customer delivery address.'
+          },
+          fulfillmentMethod: {
+            type: 'string',
+            enum: ['delivery', 'pickup'],
+            description: 'Whether the customer wants doorstep delivery (standard) or free store pickup. Set to "pickup" if customer wants to collect at store/hub.'
           }
         },
         required: ['size']
@@ -901,6 +906,7 @@ export const toolHandlers = {
       customName?: string;
       customNumber?: string;
       shippingAddress?: string;
+      fulfillmentMethod?: 'delivery' | 'pickup';
       idempotencyKey?: string;
     }
   ): Promise<CreateCheckoutResult> {
@@ -950,7 +956,8 @@ export const toolHandlers = {
         quantity,
         customName: args.customName?.trim() || undefined,
         customNumber: args.customNumber?.trim() || undefined,
-        shippingAddress: args.shippingAddress
+        shippingAddress: args.shippingAddress,
+        fulfillmentMethod: args.fulfillmentMethod
       });
 
       const response: CreateCheckoutResult = {

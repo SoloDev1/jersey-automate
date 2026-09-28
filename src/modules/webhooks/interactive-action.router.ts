@@ -113,11 +113,32 @@ export const interactiveActionRouter = {
         }
 
         case 'buy': {
+          const jersey = await catalogService.getJersey(organizationId, action.jerseyId);
+          if (jersey && jersey.isActive) {
+            await whatsappCommerceService.sendFulfillmentPicker(organizationId, conversationId, {
+              toPhone,
+              jersey,
+              size: action.size
+            });
+            return true;
+          }
+
           await whatsappCommerceService.executeCheckout(organizationId, conversationId, {
             customerPhone: toPhone,
             jerseyId: action.jerseyId,
             size: action.size,
             quantity: 1
+          });
+          return true;
+        }
+
+        case 'fulfillment': {
+          await whatsappCommerceService.executeCheckout(organizationId, conversationId, {
+            customerPhone: toPhone,
+            jerseyId: action.jerseyId,
+            size: action.size,
+            quantity: 1,
+            fulfillmentMethod: action.method
           });
           return true;
         }

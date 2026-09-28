@@ -56,6 +56,7 @@ export interface CreateOrderDTO {
   customerName?: string;
   items: CreateOrderItemInput[];
   shippingAddress?: string;
+  fulfillmentMethod?: 'delivery' | 'pickup';
   notes?: string;
 }
 

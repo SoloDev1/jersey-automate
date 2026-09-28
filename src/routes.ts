@@ -7,6 +7,7 @@ import { whatsappRouter } from './modules/whatsapp/whatsapp.routes.js';
 import { webhooksRouter } from './modules/webhooks/webhooks.routes.js';
 import { aiRouter } from './modules/ai/ai.routes.js';
 import { customersRouter } from './modules/customers/customers.routes.js';
+import { settingsRouter } from './modules/settings/settings.routes.js';
 
 export const apiRouter = Router();
 
@@ -28,6 +29,7 @@ apiRouter.use('/customers', customersRouter);
 apiRouter.use('/whatsapp', whatsappRouter);
 apiRouter.use('/webhooks', webhooksRouter);
 apiRouter.use('/ai', aiRouter);
+apiRouter.use('/settings', settingsRouter);
 
 
 

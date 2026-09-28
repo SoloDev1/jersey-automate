@@ -4,6 +4,7 @@ export type WhatsAppAction =
   | { type: 'view'; jerseyId: string }
   | { type: 'sizes'; jerseyId: string }
   | { type: 'buy'; jerseyId: string; size: JerseySize }
+  | { type: 'fulfillment'; method: 'delivery' | 'pickup'; jerseyId: string; size: JerseySize }
   | { type: 'team'; team: string }
   | { type: 'support_human' };
 
@@ -18,6 +19,10 @@ export const whatsappActions = {
 
   buildBuy(jerseyId: string, size: JerseySize): string {
     return `buy:${jerseyId}:${size}`;
+  },
+
+  buildFulfillment(method: 'delivery' | 'pickup', jerseyId: string, size: JerseySize): string {
+    return `fulfill:${method}:${jerseyId}:${size}`;
   },
 
   buildTeam(team: string): string {
@@ -46,6 +51,16 @@ export const whatsappActions = {
           const size = parts[2].toUpperCase() as JerseySize;
           if (validSizes.includes(size)) {
             return { type: 'buy', jerseyId: parts[1], size };
+          }
+        }
+        break;
+      case 'fulfill':
+        if (parts[1] && parts[2] && parts[3]) {
+          const method = parts[1].toLowerCase();
+          const validSizes: JerseySize[] = ['XS', 'S', 'M', 'L', 'XL', 'XXL', '3XL'];
+          const size = parts[3].toUpperCase() as JerseySize;
+          if ((method === 'delivery' || method === 'pickup') && validSizes.includes(size)) {
+            return { type: 'fulfillment', method: method as 'delivery' | 'pickup', jerseyId: parts[2], size };
           }
         }
         break;

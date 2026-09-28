@@ -173,7 +173,8 @@ export const ordersRepository = {
       where: { organizationId }
     });
     const currency = settings?.currency || 'NGN';
-    const shippingFee = Number(settings?.defaultShippingFee ?? 2000);
+    const isPickup = dto.fulfillmentMethod === 'pickup';
+    const shippingFee = isPickup ? 0 : Number(settings?.defaultShippingFee ?? 2000);
     const printingFeePerItem = Number(settings?.customPrintingFee ?? 3000);
     const tSettingsEnd = performance.now();
 
@@ -288,8 +289,12 @@ export const ordersRepository = {
             paymentStatus: 'pending',
             fulfillmentStatus: 'unfulfilled',
             reservationExpiresAt,
-            shippingAddress: dto.shippingAddress || null,
-            notes: dto.notes || null
+            shippingAddress: isPickup
+              ? dto.shippingAddress || 'Store Pickup'
+              : dto.shippingAddress || null,
+            notes: isPickup
+              ? dto.notes ? `Store Pickup | ${dto.notes}` : 'Store Pickup'
+              : dto.notes || null
           }
         });
         const tOrderCreateEnd = performance.now();

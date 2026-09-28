@@ -50,9 +50,22 @@ model Setting {
   organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   storeName          String  @default("Jersey Reseller Hub") @map("store_name") @db.VarChar(255)
+  storeCategory      String  @default("football_jerseys") @map("store_category") @db.VarChar(50)
+  businessDescription String? @default("authentic club and national team football jerseys and related kits") @map("business_description") @db.Text
+  storeEmoji         String  @default("⚽") @map("store_emoji") @db.VarChar(10)
   currency           String  @default("NGN") @db.VarChar(10)
   defaultShippingFee Decimal @default(2000.00) @map("default_shipping_fee") @db.Decimal(10, 2)
   customPrintingFee  Decimal @default(3000.00) @map("custom_printing_fee") @db.Decimal(10, 2)
+  customOptionTitle  String? @default("Custom Printing") @map("custom_option_title") @db.VarChar(100)
+  customOptionFee    Decimal? @default(3000.00) @map("custom_option_fee") @db.Decimal(10, 2)
+
+  // AI Persona & Scope Customization
+  aiPersonaTone        String  @default("friendly") @map("ai_persona_tone") @db.VarChar(50)
+  customStorePolicies  String? @default("Delivery within 2-4 business days. Standard return policy applies.") @map("custom_store_policies") @db.Text
+  outOfScopeMessage    String? @map("out_of_scope_message") @db.Text
+  clarificationMessage String? @map("clarification_message") @db.Text
+  brandKeywords        Json?   @default("[]") @map("brand_keywords")
+  categoryKeywords     Json?   @default("[]") @map("category_keywords")
 
   // WhatsApp Meta Integration Secrets
   wabaId               String?   @map("waba_id") @db.VarChar(100)

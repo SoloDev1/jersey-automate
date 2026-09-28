@@ -17,6 +17,7 @@ export const createOrderSchema = z.object({
   customerName: z.string().max(150).optional(),
   items: z.array(orderItemInputSchema).min(1, 'Order must contain at least one item'),
   shippingAddress: z.string().optional(),
+  fulfillmentMethod: z.enum(['delivery', 'pickup']).optional(),
   notes: z.string().optional()
 });
 

@@ -103,6 +103,20 @@ const FOOTBALL_TEAMS_PATTERN =
 const SHOPPING_INTENT_PATTERN =
   /\b(jersey|jerseys|kits?|football kit|home kit|away kit|third kit|player version|fan version|retro kit|retro|tracksuit|shirt|shirts?|size\s*[smlx0-9]+|small|medium|large|xl|xxl|2xl|3xl|price|prices|cost|how much|stock|available|availability|in stock|buy|purchase|order|catalogue|catalog|delivery|shipping|custom print|printing|abeg|una get|wetin be the price|how much last)\b/i;
 
+export interface DynamicRouteContext {
+  storeName?: string;
+  storeCategory?: string;
+  storeEmoji?: string;
+  brandKeywords?: string[];
+  categoryKeywords?: string[];
+  outOfScopeMessage?: string | null;
+  clarificationMessage?: string | null;
+}
+
+function escapeRegExp(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 /**
  * Evaluates customer messages with zero LLM overhead:
  * 1. Screens for obvious out-of-scope abuse (returning static redirect with 0 token cost).
@@ -116,8 +130,26 @@ const SHOPPING_INTENT_PATTERN =
  * 3. Never sends an unknown/ambiguous message to the general AI agent by default.
  *    Instead, returns a fixed clarification prompt with $0 token cost.
  */
-export function routeMessage(input: RouteInput): RouteDecision {
+export function routeMessage(
+  input: RouteInput,
+  dynamicContext?: DynamicRouteContext
+): RouteDecision {
   const trimmed = input.userMessage.trim();
+  const storeName = dynamicContext?.storeName || 'Jersey Hub';
+  const emoji = dynamicContext?.storeEmoji || '⚽';
+
+  const defaultRedirect =
+    dynamicContext?.storeName && dynamicContext.storeName !== 'Jersey Hub'
+      ? `${emoji} I am the ${storeName} sales assistant! I am here exclusively to help you find products, check size stock, and place orders. How can I help with your shopping today?`
+      : STORE_SCOPE_REDIRECT;
+
+  const defaultClarification =
+    dynamicContext?.storeName && dynamicContext.storeName !== 'Jersey Hub'
+      ? `${emoji} I can help you find products, check available sizes, or track an order at ${storeName}! What are you looking for today?`
+      : STORE_CLARIFICATION_MESSAGE;
+
+  const redirectMessage = dynamicContext?.outOfScopeMessage?.trim() || defaultRedirect;
+  const clarificationMessage = dynamicContext?.clarificationMessage?.trim() || defaultClarification;
 
   // 1. Layer 1 Out-of-Scope Screening
   for (const rule of OUT_OF_SCOPE_RULES) {
@@ -125,7 +157,7 @@ export function routeMessage(input: RouteInput): RouteDecision {
       return {
         type: 'out_of_scope',
         reason: rule.reason,
-        redirectMessage: STORE_SCOPE_REDIRECT
+        redirectMessage
       };
     }
   }
@@ -216,15 +248,39 @@ export function routeMessage(input: RouteInput): RouteDecision {
     };
   }
 
-  // 7. Verified Shopping Intent or Football Club Recognition
+  // 7. Verified Shopping Intent or Brand/Club Recognition
+  const matchesCustomBrand = Boolean(
+    dynamicContext?.brandKeywords?.length &&
+      dynamicContext.brandKeywords.some((b) =>
+        new RegExp(`\\b${escapeRegExp(b.trim())}\\b`, 'i').test(trimmed)
+      )
+  );
+
+  const matchesCustomCategory = Boolean(
+    dynamicContext?.categoryKeywords?.length &&
+      dynamicContext.categoryKeywords.some((c) =>
+        new RegExp(`\\b${escapeRegExp(c.trim())}\\b`, 'i').test(trimmed)
+      )
+  );
+
   const matchesFootballTeam = FOOTBALL_TEAMS_PATTERN.test(trimmed);
   const matchesShoppingIntent = SHOPPING_INTENT_PATTERN.test(trimmed);
 
-  if (matchesFootballTeam || matchesShoppingIntent) {
+  if (
+    matchesCustomBrand ||
+    matchesCustomCategory ||
+    matchesFootballTeam ||
+    matchesShoppingIntent
+  ) {
+    let reason = 'shopping_intent';
+    if (matchesCustomBrand) reason = 'custom_brand_discovery';
+    else if (matchesCustomCategory) reason = 'custom_category_discovery';
+    else if (matchesFootballTeam) reason = 'club_discovery';
+
     return {
       type: 'agent',
       tier: 'fast',
-      reason: matchesFootballTeam ? 'club_discovery' : 'shopping_intent',
+      reason,
       requestType: 'product_discovery',
       allowedTools: ['show_product', 'search_catalog']
     };
@@ -235,6 +291,6 @@ export function routeMessage(input: RouteInput): RouteDecision {
   return {
     type: 'clarification',
     reason: 'unclear_non_shopping_intent',
-    clarificationMessage: STORE_CLARIFICATION_MESSAGE
+    clarificationMessage
   };
 }

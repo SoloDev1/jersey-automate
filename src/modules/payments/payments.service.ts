@@ -365,19 +365,33 @@ export const paymentsService = {
         }).format(order.totalAmount);
 
         const customerGreeting = order.customerName ? ` ${order.customerName}` : '';
+        const isPickup =
+          Number(order.shippingFee) === 0 ||
+          order.shippingAddress === 'Store Pickup' ||
+          Boolean(order.notes?.includes('Store Pickup'));
+
+        const fulfillmentLine = isPickup
+          ? `• *Fulfillment:* Store Pickup (Free)`
+          : `• *Fulfillment:* Doorstep Delivery (${order.currency} ${Number(order.shippingFee).toLocaleString()})`;
+
+        const nextSteps = isPickup
+          ? `📦 *Collection Details:*\nYour order is now being prepped at our store hub! When you come for pickup, simply show your order number: *#${order.orderNumber}* ⚽`
+          : order.shippingAddress && order.shippingAddress !== 'Store Pickup'
+          ? `📦 *What happens next?*\nYour kit is being prepped for dispatch to:\n*${order.shippingAddress}*\nWe will notify you here once the courier picks it up! 🚚`
+          : `📦 *What happens next?*\nPayment confirmed! Please reply with your delivery address & city so our courier can dispatch your kit. 🚚`;
+
         const receiptMessage = [
-          `🎉 *PAYMENT RECEIVED & CONFIRMED!*`,
+          `🎉 *PAYMENT CONFIRMED!*`,
           ``,
-          `Thank you${customerGreeting}! We have successfully received your payment of *${formattedAmount}*.`,
+          `Thank you${customerGreeting}! We have received your payment of *${formattedAmount}*.`,
           ``,
-          `📋 *Receipt & Order Details:*`,
+          `📋 *Order Summary:*`,
           `• *Order Number:* #${order.orderNumber}`,
           `• *Payment Status:* Paid via ${data.channel || 'Paystack'} ✅`,
+          fulfillmentLine,
           itemsSummary ? `\n*Items Ordered:*\n${itemsSummary}` : '',
-          order.shippingAddress ? `• *Delivery Address:* ${order.shippingAddress}` : '',
           ``,
-          `📦 *What happens next?*`,
-          `Your payment has been confirmed! We will notify you here once your order is prepared and dispatched 🚚`
+          nextSteps
         ]
           .filter(Boolean)
           .join('\n');
