@@ -147,7 +147,7 @@ export const interactiveActionRouter = {
 
             await whatsappService.sendTextMessage(organizationId, {
               toPhone,
-              body: `🚚 *Doorstep Delivery (NGN 2,000)* selected for *${jerseyName}* (Size *${action.size}*)!\n\nPlease reply with your delivery address & city (e.g. *1b Egbede Lane, Ikeja, Lagos*) so we can prepare your order and checkout link. 📦`
+              body: `🚚 *Doorstep Delivery (NGN 2,000)* selected for *${jerseyName}* (Size *${action.size}*)!\n\nPlease reply with your delivery address & city (e.g. *12 Allen Avenue, Ikeja, Lagos*) so we can prepare your order and checkout link. 📦`
             });
             return true;
           }
