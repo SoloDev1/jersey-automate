@@ -325,7 +325,7 @@ export const whatsappCommerceService = {
         buttons: [
           {
             id: whatsappActions.buildFulfillment('delivery', jersey.id, size),
-            title: `🚚 Delivery (${formattedFee})`.slice(0, 20)
+            title: `🚚 Delivery`
           },
           {
             id: whatsappActions.buildFulfillment('pickup', jersey.id, size),
