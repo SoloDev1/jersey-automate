@@ -148,8 +148,21 @@ export const catalogRepository = {
     }
 
     if (filter.team) {
-      const normalized = normalizeTeamName(filter.team);
-      where.team = { contains: normalized, mode: 'insensitive' };
+      const rawTeam = filter.team.trim();
+      const normalized = normalizeTeamName(rawTeam);
+      // If the alias table expanded the name (e.g. "tottenham" → "Tottenham Hotspur"),
+      // search for BOTH the expanded form AND the original input.
+      // This prevents a mismatch where the DB stores "Tottenham" but the query
+      // searches for "Tottenham Hotspur" (a longer string that contains check won't find).
+      if (normalized.toLowerCase() !== rawTeam.toLowerCase()) {
+        where.OR = [
+          ...((where.OR as Prisma.JerseyWhereInput[]) || []),
+          { team: { contains: normalized, mode: 'insensitive' } },
+          { team: { contains: rawTeam, mode: 'insensitive' } }
+        ];
+      } else {
+        where.team = { contains: normalized, mode: 'insensitive' };
+      }
     }
 
     if (filter.season) {
