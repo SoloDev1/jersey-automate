@@ -852,5 +852,76 @@ export const whatsappCommerceService = {
       body: `⚽ We couldn't find any available kits for "*${query}*" right now. Please type another football club or national team!`
     });
     return messageId;
+  },
+
+  /**
+   * Sends an interactive list of ALL active teams in the catalog.
+   * Used for general browse queries like "What kits are available?" where no specific club was mentioned.
+   * Each row uses the existing team: action ID — tapping loads that team's kit list via the action router.
+   */
+  async sendAllTeamsList(
+    organizationId: string,
+    conversationId: string,
+    options: {
+      toPhone: string;
+      teams: string[];
+    }
+  ): Promise<string> {
+    const { teams, toPhone } = options;
+
+    // WhatsApp list rows: max 10 per section
+    const rows = teams.slice(0, 10).map((t) => ({
+      id: whatsappActions.buildTeam(t),
+      title: t.slice(0, 24),
+      description: 'Tap to browse kits'
+    }));
+
+    if (rows.length === 0) {
+      const messageId = await whatsappService.sendTextMessage(organizationId, {
+        toPhone,
+        body: `⚽ We're updating our stock right now! Please check back shortly or type a specific club name.`
+      });
+      return messageId;
+    }
+
+    const messageId = await whatsappService.sendInteractiveMessage(organizationId, {
+      toPhone,
+      header: {
+        type: 'text',
+        text: '⚽ Our Available Kits'
+      },
+      body: `Here are the clubs we currently stock. Tap any club to browse their kits:`,
+      footer: 'Jersey Hub Official Store',
+      action: {
+        type: 'list',
+        buttonText: 'Browse Clubs',
+        sections: [
+          {
+            title: 'Available Clubs',
+            rows
+          }
+        ]
+      }
+    });
+
+    const savedMessage = await chatRepository.insertMessage(organizationId, {
+      conversationId,
+      metaMessageId: messageId,
+      direction: 'outbound',
+      type: 'text',
+      body: `[Club Catalog: ${teams.slice(0, 10).join(', ')}]`,
+      deliveryStatus: 'sent'
+    });
+
+    if (savedMessage) {
+      socketService.emitNewMessage(organizationId, savedMessage);
+      const updatedConv = await chatRepository.getConversationById(organizationId, conversationId);
+      if (updatedConv) {
+        socketService.emitConversationUpdated(organizationId, updatedConv);
+      }
+    }
+
+    return messageId;
   }
 };
+

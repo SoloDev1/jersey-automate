@@ -220,5 +220,20 @@ export const catalogMatcher = {
       take: limit
     });
     return anyActive.map((a) => a.team);
+  },
+
+  /**
+   * Returns ALL distinct teams currently active in tenant catalog, alphabetically sorted.
+   * Used for general browse responses (e.g. "What kits are available?") — no popularity bias.
+   */
+  async getAllActiveTeams(organizationId: string): Promise<string[]> {
+    const rows = await prisma.jersey.findMany({
+      where: { organizationId, isActive: true },
+      select: { team: true },
+      distinct: ['team'],
+      orderBy: { team: 'asc' }
+    });
+    return rows.map((r) => r.team);
   }
 };
+

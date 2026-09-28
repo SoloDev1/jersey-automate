@@ -292,8 +292,18 @@ Customer is returning after ${hoursInactive !== null ? `${hoursInactive}+ hours`
 
         // A. Search / View Kit Intent
         if (intent === 'SEARCH_KIT' || intent === 'VIEW_TEAM') {
-          const teamQuery = team || userMessage;
-          const matchResult = await catalogMatcher.matchTeam(organizationId, teamQuery);
+          // ── A1. No team specified → general browse: show all active catalog teams ──
+          if (!team) {
+            const allTeams = await catalogMatcher.getAllActiveTeams(organizationId);
+            await whatsappCommerceService.sendAllTeamsList(organizationId, conversationId, {
+              toPhone: customer.phoneNumber,
+              teams: allTeams
+            });
+            return;
+          }
+
+          // ── A2. Team specified → match against catalog and show kits ─────────────
+          const matchResult = await catalogMatcher.matchTeam(organizationId, team);
 
           if (matchResult.matchType === 'EXACT_MATCH' && matchResult.team) {
             const matchedTeam = matchResult.team;
@@ -331,26 +341,29 @@ Customer is returning after ${hoursInactive !== null ? `${hoursInactive}+ hours`
               });
               return;
             }
-          } else if (matchResult.matchType === 'AMBIGUOUS_MATCH') {
+            // Team matched but 0 active kits → fall through to no-match
+          }
+
+          if (matchResult.matchType === 'AMBIGUOUS_MATCH') {
             await conversationStateService.updateState(organizationId, conversationId, {
               stage: 'disambiguating_team'
             });
             await whatsappCommerceService.sendTeamDisambiguation(organizationId, conversationId, {
               toPhone: customer.phoneNumber,
-              query: teamQuery,
+              query: team,
               candidateTeams: matchResult.candidateTeams
             });
             return;
-          } else {
-            // NO_MATCH in catalog
-            const popularTeams = await catalogMatcher.getPopularActiveTeams(organizationId, 3);
-            await whatsappCommerceService.sendPopularClubsList(organizationId, conversationId, {
-              toPhone: customer.phoneNumber,
-              query: teamQuery,
-              popularTeams
-            });
-            return;
           }
+
+          // NO_MATCH (or EXACT_MATCH with 0 active kits) → show popular clubs
+          const popularTeams = await catalogMatcher.getPopularActiveTeams(organizationId, 3);
+          await whatsappCommerceService.sendPopularClubsList(organizationId, conversationId, {
+            toPhone: customer.phoneNumber,
+            query: team,
+            popularTeams
+          });
+          return;
         }
 
         // B. Human Handover Request
