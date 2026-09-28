@@ -1,5 +1,7 @@
 export type ShoppingStage =
   | 'browsing'
+  | 'asking_for_team'
+  | 'asking_for_kit_type'
   | 'disambiguating_team'
   | 'selecting_kit'
   | 'viewing_product'

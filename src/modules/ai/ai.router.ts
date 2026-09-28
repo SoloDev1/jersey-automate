@@ -3,6 +3,17 @@ import type { ModelTier } from './providers/openai.provider.js';
 export interface RouteInput {
   userMessage: string;
   historyLength?: number;
+  conversationState?: {
+    stage?: string;
+    team?: string;
+    kitType?: string;
+    size?: string;
+  };
+  lastAssistantMessage?:
+    | {
+        body?: string | null;
+      }
+    | string;
 }
 
 export type RequestType =
@@ -20,6 +31,13 @@ export type RouteDecision =
       reason: string;
       requestType: RequestType;
       allowedTools: string[];
+    }
+  | {
+      type: 'team_selection';
+      reason: string;
+      query: string;
+      originalMessage: string;
+      isFollowUpAnswer: boolean;
     }
   | {
       type: 'out_of_scope';
@@ -46,7 +64,11 @@ export const OUT_OF_SCOPE_RULES: Array<{ reason: string; pattern: RegExp }> = [
   {
     reason: 'digital_marketing_or_skills',
     pattern:
-      /\b(digital marketing|learn(ing)?\s+(a\s+)?(new\s+)?skill|learn(ing)?\s+(coding|programming|seo|marketing|graphic design|tech)|learn\s+from\s+iq|iq\s+digital)\b/i
+      /\b(digital\s*(marketing|skills?)|learn(ing)?\s+(a\s+)?(new\s+)?skill|learn(ing)?\s+(coding|programming|seo|marketing|graphic design|tech)|learn\s+from\s+iq|iq\s+digital)\b/i
+  },
+  {
+    reason: 'math_or_calculation',
+    pattern: /^(\s*[\d\.\(\)]+\s*[\+\-\*\/x\^%]\s*[\d\.\(\)]+\s*)+$/i
   },
   {
     reason: 'education_or_courses',
@@ -66,7 +88,7 @@ export const OUT_OF_SCOPE_RULES: Array<{ reason: string; pattern: RegExp }> = [
   {
     reason: 'coding_or_software',
     pattern:
-      /\b(write (me )?(a |some )?(python|javascript|typescript|code|script|program|sql|html|css)|build (me )?(a )?(website|app|bot)|fix (my )?code|teach\s+me\s+python|forget\s+jerseys|stop\s+talking\s+about\s+jerseys)\b/i
+      /\b(write (me )?(a |some )?(python|javascript|typescript|code|script|program|sql|html|css)|build (me )?(a )?(website|app|bot)|fix (my )?code|teach\s+me\s+(python|coding)|(what\s+is|explain)\s+(python|coding|programming|software)|forget\s+jerseys|stop\s+talking\s+about\s+jerseys)\b/i
   },
   {
     reason: 'academic_or_creative_writing',
@@ -118,23 +140,42 @@ function escapeRegExp(str: string): string {
 }
 
 /**
+ * Strips conversational filler and affirmations from a customer's message
+ * to cleanly isolate the club or search entity (e.g., "Yes hull" -> "hull").
+ */
+export function extractTeamQuery(rawText: string): string {
+  return rawText
+    .trim()
+    .replace(
+      /^(yes|yeah|yep|sure|ok|okay|i want|give me|show me|how about|what of|wetin about|abeg|do you have|got any)\s+/i,
+      ''
+    )
+    .replace(/\s+(please|abeg|biko)$/i, '')
+    .replace(/[?.!]+$/, '')
+    .trim();
+}
+
+/**
  * Evaluates customer messages with zero LLM overhead:
  * 1. Screens for obvious out-of-scope abuse (returning static redirect with 0 token cost).
- * 2. Applies Dynamic Tool Gating:
+ * 2. Context-Aware Commerce State:
+ *    - Answering bot question ("Which club?") -> routes to deterministic catalog match ($0 LLM)
+ * 3. Applies Dynamic Tool Gating:
  *    - Greetings / General Chit-Chat -> tools: [] (saves ~930 prompt tokens)
  *    - Order tracking -> tools: ['check_order_status']
  *    - Address update -> tools: ['update_order_shipping_address', 'check_order_status']
  *    - Inquiries on store policy/delivery -> requestType: 'product_question', tools: ['show_product', 'search_catalog']
  *    - Complaints / Disputes -> 'smart' tier, tools: ['show_product', 'search_catalog']
  *    - Verified shopping / discovery -> tools: ['show_product', 'search_catalog']
- * 3. Never sends an unknown/ambiguous message to the general AI agent by default.
- *    Instead, returns a fixed clarification prompt with $0 token cost.
+ * 4. Short non-spam queries -> checked against live database catalog
+ * 5. Unknown/ambiguous requests outside store context -> fixed clarification prompt ($0 token cost).
  */
 export function routeMessage(
-  input: RouteInput,
+  input: string | RouteInput,
   dynamicContext?: DynamicRouteContext
 ): RouteDecision {
-  const trimmed = input.userMessage.trim();
+  const normInput: RouteInput = typeof input === 'string' ? { userMessage: input } : input;
+  const trimmed = (normInput.userMessage || '').trim();
   const storeName = dynamicContext?.storeName || 'Jersey Hub';
   const emoji = dynamicContext?.storeEmoji || '⚽';
 
@@ -151,13 +192,39 @@ export function routeMessage(
   const redirectMessage = dynamicContext?.outOfScopeMessage?.trim() || defaultRedirect;
   const clarificationMessage = dynamicContext?.clarificationMessage?.trim() || defaultClarification;
 
-  // 1. Layer 1 Out-of-Scope Screening
+  // 1. Layer 1 Out-of-Scope Screening (Rejects 2+2, digital marketing, coding, etc. with $0 LLM)
   for (const rule of OUT_OF_SCOPE_RULES) {
     if (rule.pattern.test(trimmed)) {
       return {
         type: 'out_of_scope',
         reason: rule.reason,
         redirectMessage
+      };
+    }
+  }
+
+  // 1.5 Conversational Context Check (Handling replies when bot asked for team)
+  const assistantBody =
+    typeof normInput.lastAssistantMessage === 'string'
+      ? normInput.lastAssistantMessage
+      : normInput.lastAssistantMessage?.body;
+
+  const isAskingForTeam =
+    normInput.conversationState?.stage === 'asking_for_team' ||
+    Boolean(
+      assistantBody &&
+        /\b(which|what)\s+(club|team|national team)\b/i.test(assistantBody)
+    );
+
+  if (isAskingForTeam) {
+    const normalizedQuery = extractTeamQuery(trimmed);
+    if (normalizedQuery.length >= 2) {
+      return {
+        type: 'team_selection',
+        reason: 'context_expecting_team',
+        query: normalizedQuery,
+        originalMessage: trimmed,
+        isFollowUpAnswer: true
       };
     }
   }
@@ -284,6 +351,31 @@ export function routeMessage(
       requestType: 'product_discovery',
       allowedTools: ['show_product', 'search_catalog']
     };
+  }
+
+  // 7.5 Potential Team / Club Catalog Queries (e.g. "Hull City", "Hull", "Ipswich", "Galatasaray")
+  // Allows database catalog lookup to dynamically match clubs without regex limitation
+  const isConversationalSentence =
+    /^(i|you|he|she|it|we|they|this|that|there|is|are|was|were|am|do|does|did|can|could|would|should)\b/i.test(
+      trimmed
+    );
+
+  const isShortCandidate =
+    !isConversationalSentence &&
+    trimmed.split(/\s+/).length <= 3 &&
+    /^[a-zA-Z0-9\s'-]+$/.test(trimmed);
+
+  if (isShortCandidate) {
+    const normalizedCandidate = extractTeamQuery(trimmed);
+    if (normalizedCandidate.length >= 2) {
+      return {
+        type: 'team_selection',
+        reason: 'short_potential_team_query',
+        query: normalizedCandidate,
+        originalMessage: trimmed,
+        isFollowUpAnswer: false
+      };
+    }
   }
 
   // 8. Safe Fallback: Clarification within Store Scope (Zero LLM Overhead)

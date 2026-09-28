@@ -60,7 +60,34 @@ export class AiService {
         return;
       }
 
-      // 3. Layer 1 & 2 Deterministic Routing (Zero LLM overhead) with Tenant Customization
+      // 3. Session Boundary & Context Loading (Loaded BEFORE routing decisions)
+      const currentInboundTime = inboundTimestamp || new Date();
+      const previousMeaningfulMessage = await chatRepository.getLastMeaningfulMessage(
+        organizationId,
+        conversationId,
+        currentMessageId
+      );
+
+      const prevTimeMs = previousMeaningfulMessage?.messageTimestamp
+        ? new Date(previousMeaningfulMessage.messageTimestamp).getTime()
+        : previousMeaningfulMessage?.createdAt
+          ? new Date(previousMeaningfulMessage.createdAt).getTime()
+          : null;
+
+      const isNewSession =
+        !prevTimeMs || currentInboundTime.getTime() - prevTimeMs > SESSION_TIMEOUT_MS;
+
+      // When a session boundary is crossed:
+      // Explicitly reset transactional commerce state (active jersey hold, size selection, pending order)
+      if (isNewSession) {
+        await conversationStateService.startNewSession(organizationId, conversationId);
+      }
+
+      // Fetch recent message history and active commerce state
+      const recentMessages = await chatRepository.getMessages(organizationId, conversationId, 6);
+      const currentState = await conversationStateService.getState(organizationId, conversationId);
+
+      // 4. Context-Aware Deterministic Routing (Zero LLM overhead) with Tenant Customization
       const dynamicRouteContext: DynamicRouteContext = {
         storeName: storeSettings.storeName,
         storeCategory: storeSettings.storeCategory,
@@ -71,7 +98,17 @@ export class AiService {
         clarificationMessage: storeSettings.clarificationMessage
       };
 
-      const route = routeMessage({ userMessage }, dynamicRouteContext);
+      const route = routeMessage(
+        {
+          userMessage,
+          historyLength: recentMessages.length,
+          conversationState: currentState,
+          lastAssistantMessage: previousMeaningfulMessage
+            ? { body: previousMeaningfulMessage.body }
+            : undefined
+        },
+        dynamicRouteContext
+      );
 
       // Out of scope or Clarification: static store response with $0 OpenAI cost
       if (route.type === 'out_of_scope' || route.type === 'clarification') {
@@ -102,36 +139,102 @@ export class AiService {
         return;
       }
 
-      // 4. Session Boundary & Explicit Tool State Hygiene
-      const currentInboundTime = inboundTimestamp || new Date();
-      const previousMeaningfulMessage = await chatRepository.getLastMeaningfulMessage(
-        organizationId,
-        conversationId,
-        currentMessageId
-      );
+      // Dynamic Team Selection: Direct Database Catalog Lookup ($0 LLM cost)
+      if (route.type === 'team_selection') {
+        const matchResult = await catalogMatcher.matchTeam(organizationId, route.query);
 
-      const prevTimeMs = previousMeaningfulMessage?.messageTimestamp
-        ? new Date(previousMeaningfulMessage.messageTimestamp).getTime()
-        : previousMeaningfulMessage?.createdAt
-          ? new Date(previousMeaningfulMessage.createdAt).getTime()
-          : null;
+        if (matchResult.matchType === 'EXACT_MATCH' && matchResult.team) {
+          const matchedTeam = matchResult.team;
+          await conversationStateService.updateState(organizationId, conversationId, {
+            stage: 'selecting_kit',
+            team: matchedTeam
+          });
 
-      const isNewSession =
-        !prevTimeMs || currentInboundTime.getTime() - prevTimeMs > SESSION_TIMEOUT_MS;
+          const allKits = await catalogService.getCatalog(organizationId, {
+            team: matchedTeam,
+            limit: 10
+          });
 
-      // When a session boundary is crossed:
-      // Explicitly reset transactional commerce state (active jersey hold, size selection, pending order)
-      if (isNewSession) {
-        await conversationStateService.startNewSession(organizationId, conversationId);
+          if (allKits.data.length === 1) {
+            await whatsappCommerceService.sendJerseyCard(organizationId, conversationId, {
+              toPhone: customer.phoneNumber,
+              jersey: allKits.data[0]
+            });
+            return;
+          } else if (allKits.data.length > 1) {
+            await whatsappCommerceService.sendKitList(organizationId, conversationId, {
+              toPhone: customer.phoneNumber,
+              team: matchedTeam,
+              jerseys: allKits.data
+            });
+            return;
+          } else {
+            const popularTeams = await catalogMatcher.getPopularActiveTeams(organizationId, 3);
+            await whatsappCommerceService.sendPopularClubsList(organizationId, conversationId, {
+              toPhone: customer.phoneNumber,
+              query: route.query,
+              popularTeams
+            });
+            return;
+          }
+        } else if (matchResult.matchType === 'AMBIGUOUS_MATCH') {
+          await conversationStateService.updateState(organizationId, conversationId, {
+            stage: 'disambiguating_team'
+          });
+          await whatsappCommerceService.sendTeamDisambiguation(organizationId, conversationId, {
+            toPhone: customer.phoneNumber,
+            query: route.query,
+            candidateTeams: matchResult.candidateTeams
+          });
+          return;
+        } else {
+          // NO_MATCH in catalog
+          if (route.isFollowUpAnswer) {
+            // Customer was answering "Which club?" but team is not in catalog
+            const popularTeams = await catalogMatcher.getPopularActiveTeams(organizationId, 3);
+            await whatsappCommerceService.sendPopularClubsList(organizationId, conversationId, {
+              toPhone: customer.phoneNumber,
+              query: route.query,
+              popularTeams
+            });
+            return;
+          } else {
+            // Standalone short candidate query was not found in catalog -> store clarification
+            const responseBody =
+              dynamicRouteContext.clarificationMessage?.trim() ||
+              `⚽ I can help you find products, check available sizes, or track an order at ${storeSettings.storeName}! What are you looking for today?`;
+
+            const metaMessageId = await whatsappService.sendTextMessage(organizationId, {
+              toPhone: customer.phoneNumber,
+              body: responseBody
+            });
+
+            const savedMessage = await chatRepository.insertMessage(organizationId, {
+              conversationId,
+              metaMessageId,
+              direction: 'outbound',
+              type: 'text',
+              body: responseBody,
+              deliveryStatus: 'sent'
+            });
+
+            if (savedMessage) {
+              socketService.emitNewMessage(organizationId, savedMessage);
+            }
+            return;
+          }
+        }
       }
 
-      // Fetch recent message history (last 6 messages for focused context)
-      const recentMessages = await chatRepository.getMessages(organizationId, conversationId, 6);
+      // Strictly guard that remaining execution is an agent route
+      if (route.type !== 'agent') {
+        return;
+      }
+
+      // 5. Build System Prompt & Messages for LLM / AI Agent
       const systemPrompt = buildSystemPrompt(storeSettings);
       const messages: ChatMessage[] = [{ role: 'system', content: systemPrompt }];
 
-      // Fetch active shopping state so customer preference (e.g. selected club or size) is preserved
-      const currentState = await conversationStateService.getState(organizationId, conversationId);
       if (currentState.team || currentState.size || currentState.kitType) {
         messages.push({
           role: 'system',
@@ -380,6 +483,17 @@ Customer is returning after ${hoursInactive !== null ? `${hoursInactive}+ hours`
         const updatedConv = await chatRepository.getConversationById(organizationId, conversationId);
         if (updatedConv) {
           socketService.emitConversationUpdated(organizationId, updatedConv);
+        }
+
+        // 10. Track conversational expectations based on questions the assistant asked
+        if (/\b(which|what)\s+(club|team|national team)\b/i.test(cleanReplyText)) {
+          await conversationStateService.updateState(organizationId, conversationId, {
+            stage: 'asking_for_team'
+          });
+        } else if (/\b(which|what)\s+size\b/i.test(cleanReplyText)) {
+          await conversationStateService.updateState(organizationId, conversationId, {
+            stage: 'selecting_size'
+          });
         }
       }
     } catch (error: unknown) {
