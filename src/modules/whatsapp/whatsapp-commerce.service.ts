@@ -575,5 +575,153 @@ export const whatsappCommerceService = {
       paymentUrl: paymentInit.authorizationUrl,
       isExisting: false
     };
+  },
+
+  /**
+   * Sends an interactive message asking the customer to pick which club they meant
+   * when their query matches multiple teams in the catalog (e.g., Hull City vs Hull United).
+   */
+  async sendTeamDisambiguation(
+    organizationId: string,
+    conversationId: string,
+    options: {
+      toPhone: string;
+      query: string;
+      candidateTeams: string[];
+    }
+  ): Promise<string> {
+    const { query, candidateTeams, toPhone } = options;
+
+    if (candidateTeams.length <= 3) {
+      const buttons = candidateTeams.slice(0, 3).map((t) => ({
+        id: whatsappActions.buildTeam(t),
+        title: t.slice(0, 20)
+      }));
+
+      const messageId = await whatsappService.sendInteractiveMessage(organizationId, {
+        toPhone,
+        header: {
+          type: 'text',
+          text: '⚽ Multiple Clubs Found'
+        },
+        body: `We found ${candidateTeams.length} clubs matching "*${query}*". Which one did you mean?`,
+        footer: 'Jersey Hub Official Store',
+        action: {
+          type: 'button',
+          buttons
+        }
+      });
+
+      const savedMessage = await chatRepository.insertMessage(organizationId, {
+        conversationId,
+        metaMessageId: messageId,
+        direction: 'outbound',
+        type: 'text',
+        body: `[Disambiguation Sent: ${candidateTeams.join(', ')}]`,
+        deliveryStatus: 'sent'
+      });
+
+      if (savedMessage) {
+        socketService.emitNewMessage(organizationId, savedMessage);
+      }
+      return messageId;
+    }
+
+    const rows = candidateTeams.slice(0, 10).map((t) => ({
+      id: whatsappActions.buildTeam(t),
+      title: t.slice(0, 24),
+      description: `View ${t} jerseys`
+    }));
+
+    const messageId = await whatsappService.sendInteractiveMessage(organizationId, {
+      toPhone,
+      header: {
+        type: 'text',
+        text: '⚽ Select Your Club'
+      },
+      body: `We found several clubs matching "*${query}*". Tap below to choose your club:`,
+      footer: 'Jersey Hub Official Store',
+      action: {
+        type: 'list',
+        buttonText: 'Choose Club',
+        sections: [
+          {
+            title: 'Matching Clubs',
+            rows
+          }
+        ]
+      }
+    });
+
+    const savedMessage = await chatRepository.insertMessage(organizationId, {
+      conversationId,
+      metaMessageId: messageId,
+      direction: 'outbound',
+      type: 'text',
+      body: `[Disambiguation List Sent: ${candidateTeams.join(', ')}]`,
+      deliveryStatus: 'sent'
+    });
+
+    if (savedMessage) {
+      socketService.emitNewMessage(organizationId, savedMessage);
+    }
+    return messageId;
+  },
+
+  /**
+   * Sends popular clubs interactive buttons when a query has no matching kits.
+   */
+  async sendPopularClubsList(
+    organizationId: string,
+    conversationId: string,
+    options: {
+      toPhone: string;
+      query: string;
+      popularTeams: string[];
+    }
+  ): Promise<string> {
+    const { query, popularTeams, toPhone } = options;
+    const teamsToShow = popularTeams.slice(0, 3);
+
+    if (teamsToShow.length > 0) {
+      const buttons = teamsToShow.map((t) => ({
+        id: whatsappActions.buildTeam(t),
+        title: t.slice(0, 20)
+      }));
+
+      const messageId = await whatsappService.sendInteractiveMessage(organizationId, {
+        toPhone,
+        header: {
+          type: 'text',
+          text: '⚽ Club Not Found'
+        },
+        body: `We couldn't find any kits for "*${query}*" right now. Explore our popular clubs or type another team:`,
+        footer: 'Jersey Hub Official Store',
+        action: {
+          type: 'button',
+          buttons
+        }
+      });
+
+      const savedMessage = await chatRepository.insertMessage(organizationId, {
+        conversationId,
+        metaMessageId: messageId,
+        direction: 'outbound',
+        type: 'text',
+        body: `[No match for "${query}". Suggested: ${teamsToShow.join(', ')}]`,
+        deliveryStatus: 'sent'
+      });
+
+      if (savedMessage) {
+        socketService.emitNewMessage(organizationId, savedMessage);
+      }
+      return messageId;
+    }
+
+    const messageId = await whatsappService.sendTextMessage(organizationId, {
+      toPhone,
+      body: `⚽ We couldn't find any available kits for "*${query}*" right now. Please type another football club or national team!`
+    });
+    return messageId;
   }
 };

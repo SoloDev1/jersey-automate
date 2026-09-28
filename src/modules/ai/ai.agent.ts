@@ -123,11 +123,16 @@ interface ParsedCall {
   args: Record<string, unknown>;
 }
 
-/** Validate every tool call BEFORE executing any of them. Returns null if anything is malformed. */
-function parseToolCalls(calls: ToolCall[]): ParsedCall[] | null {
+/** Validate every tool call BEFORE executing any of them. Returns null if anything is malformed or unauthorized. */
+function parseToolCalls(calls: ToolCall[], allowedToolNames?: Set<string>): ParsedCall[] | null {
   const parsed: ParsedCall[] = [];
   for (const call of calls.slice(0, MAX_TOOL_CALLS_PER_TURN)) {
-    if (!TOOL_EXECUTORS[call.function.name]) return null;
+    const name = call.function.name;
+    if (!TOOL_EXECUTORS[name]) return null;
+    if (!allowedToolNames || !allowedToolNames.has(name)) {
+      console.warn(`[AI Tool Security] Blocked unauthorized tool call attempt: ${name}`);
+      return null;
+    }
     try {
       const args: unknown = JSON.parse(call.function.arguments || '{}');
       if (typeof args !== 'object' || args === null || Array.isArray(args)) return null;
@@ -140,14 +145,18 @@ function parseToolCalls(calls: ToolCall[]): ParsedCall[] | null {
 }
 
 /**
- * Evaluates whether an LLM turn plan is valid.
- * - If tools are requested: validates all calls exist with parseable arguments.
+ * Evaluates whether an LLM turn plan is valid and strictly authorized.
+ * - If tools are requested: validates all calls exist with parseable arguments and within allowed tools.
+ * - If zero tools are allowed: fails if model returned tool calls.
  * - If no tools are requested: valid as long as non-empty text response is provided.
- * - Does NOT escalate simply because zero tools were called (e.g. greetings like "Hi").
  */
-function evaluatePlan(res: AiResponse): { ok: boolean; parsed: ParsedCall[] } {
+function evaluatePlan(res: AiResponse, allowedToolNames?: Set<string>): { ok: boolean; parsed: ParsedCall[] } {
   if (res.toolCalls && res.toolCalls.length > 0) {
-    const parsed = parseToolCalls(res.toolCalls);
+    if (!allowedToolNames || allowedToolNames.size === 0) {
+      console.warn(`[AI Security] Model returned tool calls when zero tools were permitted.`);
+      return { ok: false, parsed: [] };
+    }
+    const parsed = parseToolCalls(res.toolCalls, allowedToolNames);
     return { ok: parsed !== null, parsed: parsed ?? [] };
   }
   return { ok: Boolean(res.text?.trim()), parsed: [] };
@@ -166,6 +175,7 @@ export async function runAgentTurn(
   let tier: ModelTier = startTier;
   let escalated = false;
   const activeTools = tools && tools.length > 0 ? tools : undefined;
+  const allowedToolNames = new Set((tools || []).map((t) => t.function.name));
 
   // ── Phase 1: Planning (LLM Call #1) ─────────────────────────────────────────
   // Escalation occurs strictly BEFORE any tool runs.
@@ -175,7 +185,7 @@ export async function runAgentTurn(
   try {
     plan = await providers[tier].generateResponse(messages, activeTools);
     meter.add(providers[tier], plan);
-    evaluation = evaluatePlan(plan);
+    evaluation = evaluatePlan(plan, allowedToolNames);
   } catch (err: unknown) {
     if (tier === 'smart') throw err;
     const msg = err instanceof Error ? err.message : String(err);
@@ -190,7 +200,7 @@ export async function runAgentTurn(
       try {
         plan = await providers.smart.generateResponse(messages, activeTools);
         meter.add(providers.smart, plan);
-        evaluation = evaluatePlan(plan);
+        evaluation = evaluatePlan(plan, allowedToolNames);
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error(`[AI Agent] ${providers.smart.getModelName()} also failed:`, msg);
@@ -217,6 +227,16 @@ export async function runAgentTurn(
 
   for (const { call, args } of evaluation.parsed) {
     const name = call.function.name;
+    if (!allowedToolNames.has(name)) {
+      console.warn(`[AI Security] Runtime block: tool "${name}" not in allowed set.`);
+      messages.push({
+        role: 'tool',
+        toolCallId: call.id,
+        name,
+        content: JSON.stringify({ error: `Tool ${name} is unauthorized.` })
+      });
+      continue;
+    }
     toolsCalled.push(name);
     let output: unknown;
     try {

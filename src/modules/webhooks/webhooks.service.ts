@@ -486,6 +486,43 @@ export const webhooksService = {
                       }
                     );
                   }
+
+                  // Contextual Kit Type shortcut (e.g. typing "home", "away", "third" when team is already known)
+                  const kitMatch = trimmed.match(/^(the\s+)?(home|away|third|goalkeeper|gk)(\s+(kit|jersey|shirt))?$/i);
+                  if (!actionHandled && kitMatch && state.team) {
+                    const requestedType = kitMatch[2].toLowerCase() === 'gk' ? 'goalkeeper' : kitMatch[2].toLowerCase();
+                    const { catalogService } = await import('../catalog/catalog.service.js');
+                    const specific = await catalogService.getCatalog(organizationId, {
+                      team: state.team,
+                      kitType: requestedType,
+                      limit: 1
+                    });
+                    if (specific.data.length > 0) {
+                      actionHandled = true;
+                      await interactiveActionRouter.dispatch(
+                        whatsappActions.buildView(specific.data[0].id),
+                        {
+                          organizationId,
+                          conversationId: conversation.id,
+                          customer
+                        }
+                      );
+                    }
+                  }
+
+                  // Contextual Quantity shortcut (e.g. customer enters "2" or "3")
+                  const qtyMatch = trimmed.match(/^([1-9]\d?)$/);
+                  if (!actionHandled && qtyMatch && (state.stage === 'selecting_size' || state.stage === 'viewing_product')) {
+                    const parsedQty = parseInt(qtyMatch[1], 10);
+                    await conversationStateService.updateState(organizationId, conversation.id, {
+                      quantity: parsedQty
+                    });
+                    actionHandled = true;
+                    await whatsappService.sendTextMessage(organizationId, {
+                      toPhone: fromPhone,
+                      body: `✅ Quantity set to *${parsedQty}*. Which size would you like to order?`
+                    });
+                  }
                 }
               }
 

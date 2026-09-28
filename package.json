@@ -13,6 +13,7 @@
     "sync:neon": "node scraper/scripts/sync-neon-storage.js",
     "test:whatsapp": "tsx scripts/test-whatsapp.ts",
     "test:verify": "tsx scripts/verify-session-and-freshness.ts",
+    "test:guardrails": "tsx scripts/test-scope-guardrails.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev"
   },

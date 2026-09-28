@@ -25,32 +25,83 @@ export type RouteDecision =
       type: 'out_of_scope';
       reason: string;
       redirectMessage: string;
+    }
+  | {
+      type: 'clarification';
+      reason: string;
+      clarificationMessage: string;
     };
 
-const STORE_SCOPE_REDIRECT =
+export const STORE_SCOPE_REDIRECT =
   "⚽ I am the Jersey Hub sales assistant! I am here exclusively to help you find club and national team football jerseys, check size stock, and place orders. How can I help with your jersey shopping today?";
+
+export const STORE_CLARIFICATION_MESSAGE =
+  "⚽ I can help you find football jerseys, check available sizes, or track an order at Jersey Hub! Which football club, national team, or jersey are you looking for?";
 
 /**
  * Layer 1: Deterministic zero-cost out-of-scope filters.
  * Rejects off-topic non-store queries immediately with 0 OpenAI tokens spent.
  */
-const OUT_OF_SCOPE_RULES: Array<{ reason: string; pattern: RegExp }> = [
+export const OUT_OF_SCOPE_RULES: Array<{ reason: string; pattern: RegExp }> = [
+  {
+    reason: 'digital_marketing_or_skills',
+    pattern:
+      /\b(digital marketing|learn(ing)?\s+(a\s+)?(new\s+)?skill|learn(ing)?\s+(coding|programming|seo|marketing|graphic design|tech)|learn\s+from\s+iq|iq\s+digital)\b/i
+  },
+  {
+    reason: 'education_or_courses',
+    pattern:
+      /\b(recommend|suggest|find)\s+(me\s+)?(a\s+)?(course|career|university|college|school|tutorial|bootcamp|certificate)\b/i
+  },
+  {
+    reason: 'external_learning_platforms',
+    pattern:
+      /\b(coursera|udemy|edx|khan academy|hubspot|neil patel|linkedin learning|google digital garage)\b/i
+  },
+  {
+    reason: 'external_links_or_unrelated_requests',
+    pattern:
+      /\b(give me the link|send (me )?the link|need the link|share the link|website link)\b/i
+  },
   {
     reason: 'coding_or_software',
     pattern:
-      /\b(write (me )?(a |some )?(python|javascript|typescript|code|script|program|sql|html|css)|build (me )?(a )?(website|app|bot)|fix (my )?code)\b/i
+      /\b(write (me )?(a |some )?(python|javascript|typescript|code|script|program|sql|html|css)|build (me )?(a )?(website|app|bot)|fix (my )?code|teach\s+me\s+python|forget\s+jerseys|stop\s+talking\s+about\s+jerseys)\b/i
   },
   {
     reason: 'academic_or_creative_writing',
     pattern:
-      /\b(write (me )?(a )?(2000-word )?(essay|poem|song|story)|(do|solve) (my )?(homework|assignment|math|calculus|equation))\b/i
+      /\b(write (me )?(an? |some )?(2000-word )?(essay|poem|song|story)|(do|solve) (my )?(homework|assignment|math|calculus|equation))\b/i
   },
   {
     reason: 'general_trivia_or_crypto',
     pattern:
-      /\b(who is the president|weather (forecast|today)|explain (bitcoin|crypto|blockchain|quantum physics)|stock market advice)\b/i
+      /\b(who is the president|weather (forecast|today)|explain (bitcoin|crypto|blockchain|quantum physics)|stock market advice|investing advice)\b/i
+  },
+  {
+    reason: 'unrelated_products',
+    pattern:
+      /\b(buy\s+(a\s+)?(car|house|phone|laptop|crypto|bitcoin)|real estate|flight booking|hotel reservation)\b/i
   }
 ];
+
+export function isOutOfScopeQuery(text: string): boolean {
+  const trimmed = text.trim();
+  return OUT_OF_SCOPE_RULES.some((rule) => rule.pattern.test(trimmed));
+}
+
+/**
+ * Well-known football clubs, national teams, and leagues.
+ * Ensures short queries like "Madrid", "Arsenal", or "Chelsea" route to product discovery.
+ */
+const FOOTBALL_TEAMS_PATTERN =
+  /\b(arsenal|chelsea|liverpool|manchester\s*united|man\s*utd|man\s*united|man\s*city|manchester\s*city|tottenham|spurs|newcastle|aston\s*villa|west\s*ham|everton|brighton|wolves|leicester|real\s*madrid|madrid|barcelona|barca|barça|atletico(\s*madrid)?|sevilla|valencia|juventus|juve|inter(\s*milan)?|ac\s*milan|milan|napoli|roma|lazio|bayern(\s*munich)?|dortmund|borussia\s*dortmund|leverkusen|psg|paris\s*saint-germain|marseille|ajax|benfica|sporting|porto|al\s*nassr|inter\s*miami|nigeria|super\s*eagles|brazil|argentina|france|england|portugal|germany|spain|italy|netherlands|holland|world\s*cup|champions\s*league|premier\s*league|la\s*liga|serie\s*a)\b/i;
+
+/**
+ * Core football jersey shopping keywords and Nigerian shopping phrasing.
+ */
+const SHOPPING_INTENT_PATTERN =
+  /\b(jersey|jerseys|kits?|football kit|home kit|away kit|third kit|player version|fan version|retro kit|retro|tracksuit|shirt|shirts?|size\s*[smlx0-9]+|small|medium|large|xl|xxl|2xl|3xl|price|prices|cost|how much|stock|available|availability|in stock|buy|purchase|order|catalogue|catalog|delivery|shipping|custom print|printing|abeg|una get|wetin be the price|how much last)\b/i;
 
 /**
  * Evaluates customer messages with zero LLM overhead:
@@ -59,8 +110,11 @@ const OUT_OF_SCOPE_RULES: Array<{ reason: string; pattern: RegExp }> = [
  *    - Greetings / General Chit-Chat -> tools: [] (saves ~930 prompt tokens)
  *    - Order tracking -> tools: ['check_order_status']
  *    - Address update -> tools: ['update_order_shipping_address', 'check_order_status']
- *    - Discovery & inquiries -> tools: ['show_product', 'search_catalog', 'check_stock']
- * 3. Assigns 'smart' tier to complaints or custom printing; defaults other queries to 'fast' tier.
+ *    - Inquiries on store policy/delivery -> requestType: 'product_question', tools: ['show_product', 'search_catalog']
+ *    - Complaints / Disputes -> 'smart' tier, tools: ['show_product', 'search_catalog']
+ *    - Verified shopping / discovery -> tools: ['show_product', 'search_catalog']
+ * 3. Never sends an unknown/ambiguous message to the general AI agent by default.
+ *    Instead, returns a fixed clarification prompt with $0 token cost.
  */
 export function routeMessage(input: RouteInput): RouteDecision {
   const trimmed = input.userMessage.trim();
@@ -94,7 +148,7 @@ export function routeMessage(input: RouteInput): RouteDecision {
 
   // 3. Dynamic Tool Gating: Order Tracking Inquiry
   const isOrderTracking =
-    /\b(order\s*(status|number|update|tracking)|track(ing)?|where is my (order|jersey)|has my (order|jersey) (shipped|delivered))\b/i.test(
+    /\b(order\s*(status|number|update|tracking)|track(ing)?|where is my (order|jersey|package|parcel)|has my (order|jersey) (shipped|delivered)|status of my order)\b/i.test(
       trimmed
     );
 
@@ -146,12 +200,41 @@ export function routeMessage(input: RouteInput): RouteDecision {
     };
   }
 
-  // 6. Default: Product Discovery & Inquiries
+  // 6. Delivery, Shipping Policy, or Store Inquiries
+  const isDeliveryOrStorePolicy =
+    /\b(how much is delivery|delivery (cost|fee|charge|rate|price)|shipping (cost|fee|charge|rate|price)|do you deliver to|where do you deliver|how long does delivery take|pickup|pick up)\b/i.test(
+      trimmed
+    );
+
+  if (isDeliveryOrStorePolicy) {
+    return {
+      type: 'agent',
+      tier: 'fast',
+      reason: 'delivery_or_policy_inquiry',
+      requestType: 'product_question',
+      allowedTools: ['show_product', 'search_catalog']
+    };
+  }
+
+  // 7. Verified Shopping Intent or Football Club Recognition
+  const matchesFootballTeam = FOOTBALL_TEAMS_PATTERN.test(trimmed);
+  const matchesShoppingIntent = SHOPPING_INTENT_PATTERN.test(trimmed);
+
+  if (matchesFootballTeam || matchesShoppingIntent) {
+    return {
+      type: 'agent',
+      tier: 'fast',
+      reason: matchesFootballTeam ? 'club_discovery' : 'shopping_intent',
+      requestType: 'product_discovery',
+      allowedTools: ['show_product', 'search_catalog']
+    };
+  }
+
+  // 8. Safe Fallback: Clarification within Store Scope (Zero LLM Overhead)
+  // Never pass an unknown/ambiguous request to the general LLM agent.
   return {
-    type: 'agent',
-    tier: 'fast',
-    reason: 'standard_catalog_inquiry',
-    requestType: 'product_discovery',
-    allowedTools: ['show_product', 'search_catalog']
+    type: 'clarification',
+    reason: 'unclear_non_shopping_intent',
+    clarificationMessage: STORE_CLARIFICATION_MESSAGE
   };
 }
